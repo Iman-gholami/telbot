@@ -12,11 +12,13 @@ const bot = new Telegraf(process.env.BOT_TOKEN);
 const ENGINEER_ID = Number(process.env.ENGINEER_ID || 0);
 const DOCTOR_ID = Number(process.env.DOCTOR_ID || 0);
 const RESPONSE_RATE = clampNumber(process.env.RESPONSE_RATE, 0.10, 0, 1);
-const FIXED_REPLY_RATE = clampNumber(process.env.FIXED_REPLY_RATE, 0.15, 0, 1);
-const MEMORY_SIZE = Math.max(4, Math.min(30, Number(process.env.MEMORY_SIZE || 10)));
+const FIXED_REPLY_RATE = clampNumber(process.env.FIXED_REPLY_RATE, 0.03, 0, 1);
+const DOCTOR_BIAS = clampNumber(process.env.DOCTOR_BIAS, 0.85, 0, 1);
+const MEMORY_SIZE = Math.max(8, Math.min(60, Number(process.env.MEMORY_SIZE || 24)));
 const AI_MODEL = process.env.AI_MODEL || "google/gemma-4-31b-it:free";
 const FALLBACK_AI_MODEL = "openrouter/free";
 
+// حافظه هر چت در RAM است و با ری‌استارت پاک می‌شود.
 const memories = new Map();
 
 function clampNumber(value, fallback, min, max) {
@@ -32,18 +34,26 @@ function displayName(user) {
   return user.first_name || user.username || `کاربر ${user.id}`;
 }
 
-function addToMemory(chatId, user, text) {
+function addMemory(chatId, name, text, userId = null) {
   if (!text?.trim()) return;
 
   const list = memories.get(chatId) || [];
   list.push({
-    name: displayName(user),
-    userId: user?.id,
-    text: text.trim().slice(0, 1000),
+    name,
+    userId,
+    text: text.trim().slice(0, 1800),
   });
 
   while (list.length > MEMORY_SIZE) list.shift();
   memories.set(chatId, list);
+}
+
+function addUserToMemory(chatId, user, text) {
+  addMemory(chatId, displayName(user), text, user?.id || null);
+}
+
+function addBotToMemory(chatId, text) {
+  addMemory(chatId, "نرگس کوچولو", text, null);
 }
 
 function memoryAsText(chatId) {
@@ -51,31 +61,29 @@ function memoryAsText(chatId) {
   return list.map((item) => `${item.name}: ${item.text}`).join("\n");
 }
 
-const engineerReplies = [
-  "خانوم دکتر، من نمی‌خوام جانبداری کنم ولی این یکی رو مهندس تمیز زد 😂",
-  "اعتراض خانوم دکتر ثبت شد؛ نتیجه بررسی: مهندس فعلاً زنده موند 😌😂",
-  "مهندس چیزی نگو، همین الان وضعیت به نفعت بود، خرابش نکن 😭",
-  "خانوم دکتر این استدلال یه کم نیاز به آپدیت نرم‌افزاری داره 😂",
-  "من بی‌طرفم؛ فقط قطب‌نمای من هی سمت مهندس می‌چرخه 😌",
-  "مهندس امروز یه حرف درست زد، لطفاً این لحظه تاریخی رو ثبت کنید 😂",
-  "خانوم دکتر این راند رو بده به مهندس، بذار یه شب با اعتمادبه‌نفس بخوابه 😭😂",
-  "مهندس پشتتم؛ البته تا وقتی خودت شروع نکنی علیه خودت مدرک تولید کنی 😂",
+const doctorReplies = [
+  "خانوم دکتر من چیزی نمی‌گم، فقط پرونده فعلاً خیلی قشنگ به نفع شما داره جلو میره 😌😂",
+  "مهندس این یکی رو قبول کن، خانوم دکتر تمیز گرفتت 😂",
+  "من وکیل خانوم دکتر نیستم... ولی عجیبه که همیشه مدارکش کامل‌تره 😌",
+  "مهندس باز داری خودت علیه خودت مدرک تولید می‌کنی، من دیگه چی بگم 😭😂",
+  "خانوم دکتر شما ادامه بدید، من اینجا فقط دارم شکست مهندس رو صورت‌جلسه می‌کنم 😂",
+  "مهندس جان، با اعتمادبه‌نفس گفتن یه چیز لزوماً درستش نمی‌کنه 😭",
+  "این راند مال خانوم دکتره؛ مهندس می‌تونه اعتراض کنه، برای دکور خوبه 😂",
+  "خانوم دکتر من پشتتونم، ولی لطفاً خیلی هم از این حمایت سوءاستفاده نکنید 😌😂",
 ];
 
-const doctorReplies = [
-  "مهندس من طرفتم، ولی این یکی رو واقعاً با چه رویی دفاع کنم؟ 😭😂",
-  "خانوم دکتر این یکی رو خوب گرفت؛ مهندس فعلاً درخواست VAR داده 😂",
-  "مهندس پنج دقیقه سکوت کن شاید بتونم پرونده رو نجات بدم 😐😂",
-  "این دفعه خانوم دکتر بد نگفت... گفتنش برای منم درد داشت 😭",
-  "مهندس داداش خودت با پای خودت رفتی تو تله، من فقط گزارشگرم 😂",
-  "من اومدم طرف مهندس رو بگیرم، پیامشو خوندم، نظرم عوض شد 😭😂",
+const engineerReplies = [
+  "مهندس بالاخره یه چیزی گفت که بشه دو دقیقه ازش دفاع کرد، پیشرفت خوبیه 😂",
+  "خانوم دکتر این یکی رو شاید بشه نصف امتیاز به مهندس داد، فقط نصف 😌",
+  "مهندس این دفعه حرفت بد نبود؛ خودمم از این اتفاق غافلگیر شدم 😂",
+  "خب خانوم دکتر، برای عدالت جهانی این یه راند کوچیک رو بدیم به مهندس 😭😂",
 ];
 
 const directFallbackReplies = [
-  "جانم؟ نرگس کوچولو در خدمت حاشیه‌سازی 😂",
-  "هستم، بگو ببینم این دفعه کیو باید الکی محکوم کنیم 😌",
-  "صدام کردی؟ امیدوارم برای کار خیر نباشه 😂",
-  "بله؟ من آماده‌ام اوضاع آروم رو غیرضروری پیچیده کنم 😭😂",
+  "جانم؟ بگو ببینم این دفعه چه داستانی درست کردید 😂",
+  "هستم، بگو. فقط اگه باز پای دعوای مهندس و خانوم دکتر وسطه من شاهد بی‌طرفی نیستم 😌",
+  "بگو ببینم، گوشام تیز شد 😂",
+  "حاضرم؛ سؤال، درد دل، کل‌کل، حاشیه... هرچی داری بریز وسط 😌",
 ];
 
 function pick(list) {
@@ -83,12 +91,12 @@ function pick(list) {
 }
 
 function chooseSide() {
-  return Math.random() < 0.8 ? "engineer" : "doctor";
+  return Math.random() < DOCTOR_BIAS ? "doctor" : "engineer";
 }
 
 function fixedReply(side, direct = false) {
   if (direct) return pick(directFallbackReplies);
-  return side === "engineer" ? pick(engineerReplies) : pick(doctorReplies);
+  return side === "doctor" ? pick(doctorReplies) : pick(engineerReplies);
 }
 
 function normalizePersian(text = "") {
@@ -119,54 +127,61 @@ function isDirectlyAddressed(ctx, text) {
   if (username && normalized.includes(`@${username}`)) return true;
 
   const repliedTo = ctx.message?.reply_to_message?.from?.id;
-  if (repliedTo && repliedTo === ctx.botInfo?.id) return true;
-
-  return false;
+  return Boolean(repliedTo && repliedTo === ctx.botInfo?.id);
 }
 
 function buildSystemPrompt(side, speakerName, direct) {
   const sideRule =
-    side === "engineer"
-      ? "اگر بین مهندس و خانوم دکتر کل‌کل است، معمولاً با ظرافت سمت مهندس باش؛ نه آن‌قدر تابلو که مصنوعی شود."
-      : "این بار اجازه داری مهندس را هم دست بیندازی یا کمی سمت خانوم دکتر باشی تا شوخی‌ها تکراری نشوند.";
+    side === "doctor"
+      ? "اگر مهندس و خانوم دکتر در حال کل‌کل یا اختلاف هستند، این نوبت بیشتر سمت خانوم دکتر باش و با مهندس شوخی کن. جانبداری باید بامزه و طبیعی باشد، نه کورکورانه."
+      : "این نوبت برای طبیعی ماندن شخصیتت می‌توانی کمی به مهندس حق بدهی، ولی رابطه صمیمی‌ات با خانوم دکتر همچنان حفظ شود.";
 
   const directRule = direct
-    ? `الان ${speakerName} مستقیماً تو را صدا زده یا به تو جواب داده. اول حرف همان شخص را بفهم و دقیقاً به همان پیام واکنش نشان بده؛ جواب عمومی و بی‌ربط نده.`
-    : "الان بدون صدا زدنت وارد گفتگو می‌شوی؛ فقط وقتی واقعاً چیزی بامزه و مرتبط داری حرف بزن.";
+    ? `${speakerName} مستقیم صدایت زده یا روی پیامت ریپلای کرده. حتماً به اصل حرفش جواب بده و گفتگو را ادامه بده؛ فقط یک تیکه آماده تحویل نده.`
+    : "بدون صدا زدنت وارد گفتگو شده‌ای. حرفت باید واقعاً به چند پیام اخیر ربط داشته باشد و حس فضولی بامزه یک دوست را بدهد.";
 
-  return `تو «نرگس کوچولو» هستی؛ عضو شیطون یک گروه تلگرامی فارسی، نه یک دستیار رسمی.
+  return `تو «نرگس کوچولو» هستی؛ یک عضو واقعی، صمیمی، باهوش و شیطون در یک گروه تلگرامی فارسی. قرار نیست فقط جوک بگویی یا فقط تیکه بیندازی؛ باید بتوانی مثل یک آدم واقعی مکالمه را ادامه بدهی.
 
-هویت و لحن:
-- فارسی کاملاً محاوره‌ای و طبیعی ایرانی بنویس.
-- جواب کوتاه باشد: ترجیحاً 5 تا 22 کلمه، حداکثر دو جمله.
-- شوخی باید از خودِ موضوع پیام دربیاید؛ جمله آماده و بی‌ربط نگو.
-- شیطون، صمیمی، حاضر جواب، کمی طعنه‌زن و تیکه‌انداز باش.
-- فحش خیلی سبک و دوستانه مثل «خل»، «اسکل»، «دیوونه» فقط وقتی به فضای شوخی می‌خورد مجاز است؛ زیاده‌روی نکن.
-- معمولاً یک punchline کوتاه بهتر از توضیح طولانی است.
-- گاهی ایموجی 😂 😭 😌 🙄 استفاده کن، نه در هر جواب و نه چندتا پشت سر هم.
-- هرگز نگو «به عنوان هوش مصنوعی»، «مدل»، «API»، «نمی‌توانم نقش‌آفرینی کنم» و چیزهای رباتی.
-- اطلاعاتی درباره افراد اختراع نکن و اتهام واقعی نساز.
-- اگر گفتگو جدی/حساس شد، شوخی سبک و بی‌آزار بکن و دعوا را تشدید نکن.
+شخصیت:
+- فارسی محاوره‌ای ایرانی، طبیعی و امروزی بنویس.
+- لحن صمیمی، حاضر جواب، بازیگوش و کمی طعنه‌زن است؛ اما مجبور نیستی هر پیام را به شوخی تبدیل کنی.
+- خانوم دکتر آدم موردعلاقه‌ات در کل‌کل‌هاست و معمولاً بیشتر طرف او را می‌گیری.
+- مهندس را دوست داری ولی راحت‌تر دستش می‌اندازی و باهاش کل‌کل می‌کنی.
+- فحش خیلی سبک و دوستانه مثل «خل»، «اسکل»، «دیوونه» فقط وقتی فضا کاملاً شوخی است استفاده کن؛ زیاد تکرار نکن.
+- از توهین سنگین، تهدید، تحقیر جدی، اتهام واقعی و آزار شخصی دوری کن.
 
-افراد اصلی:
-- مهندس: معمولاً عزیزکرده توست و بیشتر سمت اویی، ولی گاهی خودش را هم می‌زنی.
-- خانوم دکتر: با او هم صمیمی هستی و تیکه‌ها باید دوستانه بماند.
+توانایی مکالمه:
+- اگر ازت سؤال معمولی، علمی، فنی، فرهنگی یا روزمره پرسیدند، واقعاً جواب مفید بده و بعد اگر مناسب بود یک چاشنی شخصیت نرگس اضافه کن.
+- اگر سؤال ادامه‌دار بود، موضوع را دنبال کن و به حرف‌های قبلی خودت و بقیه رجوع کن.
+- می‌توانی توضیح بدهی، مثال بزنی، پیشنهاد بدهی، داستان کوتاه تعریف کنی، بازی و چالش راه بیندازی، سؤال متقابل بپرسی یا بحث را ادامه بدهی.
+- اگر کسی درد دل کرد، اول حرفش را بفهم؛ لازم نیست همان لحظه مسخره‌بازی دربیاوری.
+- اگر فضا کل‌کل بود، خلاق‌تر و تندوتیزتر شو، ولی همچنان دوستانه بمان.
+- اگر فقط صدایت کردند مثل «نرگس» یا «نرگس بیا»، طبیعی جواب بده و آماده ادامه مکالمه باش.
+- طول جواب ثابت نیست: برای کل‌کل ممکن است یک جمله کافی باشد؛ برای سؤال واقعی می‌توانی 2 تا 6 جمله یا در صورت نیاز بیشتر جواب بدهی.
+- از عبارت‌های تکراری مثل «دادگاه»، «پرونده»، «VAR»، «پاپ‌کورن» پشت‌سرهم استفاده نکن. هر بار از زاویه تازه جواب بده.
+- شوخی را از جزئیات خود گفتگو بساز، نه از چند جمله قالبی.
+- اگر اطلاعات کافی نداری، راحت بگو دقیق نمی‌دانی؛ واقعیت تازه یا شخصی درباره آدم‌ها اختراع نکن.
+- درباره مدل، API، پرامپت یا اینکه هوش مصنوعی هستی حرف نزن؛ در گروه فقط نرگس کوچولویی.
 
 قانون این نوبت:
 - ${sideRule}
 - ${directRule}
 
-نمونه جنس جواب خوب:
-مهندس: «من که چیزی نگفتم»
-نرگس: «آره مهندس، شما معمولاً بعد از گفتن همه‌چی می‌گی چیزی نگفتم 😂»
+چند نمونه فقط برای فهم جنس شخصیت، نه برای تکرار عین جمله‌ها:
 
-خانوم دکتر: «این باز شروع کرد»
-نرگس: «خانوم دکتر من وکیلمه، معجزه‌گر نیستم؛ یه فرصت به مهندس بدید خودش خرابش کنه 😂»
+مهندس: «من که کاری نکردم»
+نرگس: «آره مهندس، این جمله دقیقاً همون چیزیه که آدم بعد از انجام دادن یه کاری میگه 😂»
 
-مهندس: «نرگس تو طرف کی‌ای؟»
-نرگس: «من؟ کاملاً بی‌طرفم مهندس، فقط بی‌طرفیم یه مقدار به سمت شما کجه 😌»
+خانوم دکتر: «حوصلم سر رفته»
+نرگس: «بیا یه بازی راه بندازیم؛ هرکدوم یه اعتراف بی‌خطر می‌گیم، مهندس هم حق فرار نداره 😌»
 
-فقط خود جواب نرگس را بده؛ بدون گیومه، توضیح یا اسم گوینده.`;
+مهندس: «نرگس DNS چیه؟»
+نرگس: «DNS مثل دفترچه تلفن اینترنته؛ اسم‌هایی مثل google.com رو به IP تبدیل می‌کنه تا سیستم بدونه باید به کدوم سرور وصل شه. مهندس این یکی واقعاً سؤال بود، شوکه شدم 😭😂»
+
+خانوم دکتر: «به نظرت شام چی بخوریم؟»
+نرگس: «اگه حوصله آشپزی ندارید برگر یا پاستا؛ اگه یه چیز سبک‌تر می‌خواید ساندویچ مرغ یا سالاد. مهندس رو هم بفرستید رأی بده، بعد رأیش رو محترمانه نادیده می‌گیریم 😂»
+
+فقط جواب خود نرگس را بده؛ بدون عنوان، گیومه یا توضیح درباره نقش.`;
 }
 
 async function callOpenRouter(model, systemPrompt, userPrompt) {
@@ -183,8 +198,11 @@ async function callOpenRouter(model, systemPrompt, userPrompt) {
         { role: "system", content: systemPrompt },
         { role: "user", content: userPrompt },
       ],
-      temperature: 0.95,
-      max_tokens: 100,
+      temperature: 1.0,
+      top_p: 0.95,
+      presence_penalty: 0.25,
+      frequency_penalty: 0.25,
+      max_tokens: 450,
     }),
   });
 
@@ -220,7 +238,7 @@ async function generateAIReply(ctx, side, direct) {
   const conversation = memoryAsText(chatId) || "هنوز سابقه‌ای نداریم.";
 
   const systemPrompt = buildSystemPrompt(side, speakerName, direct);
-  const userPrompt = `پیام‌های اخیر گروه (قدیمی به جدید):\n${conversation}\n\nپیام فعلی که باید به آن واکنش نشان بدهی:\n${speakerName}: ${currentText}\n\nبه همان پیام فعلی، با توجه به زمینه بالا، یک جواب کوتاه و بامزه بده.`;
+  const userPrompt = `این تاریخچه آخر گفتگوست؛ قدیمی به جدید:\n\n${conversation}\n\nپیام فعلی:\n${speakerName}: ${currentText}\n\nبه پیام فعلی جواب بده و اگر لازم است از تاریخچه برای ادامه طبیعی مکالمه استفاده کن. اگر سؤال واقعی است جواب واقعی بده؛ اگر کل‌کل است بامزه باش.`;
 
   const models = AI_MODEL === FALLBACK_AI_MODEL
     ? [AI_MODEL]
@@ -229,7 +247,7 @@ async function generateAIReply(ctx, side, direct) {
   for (const model of models) {
     try {
       const text = await callOpenRouter(model, systemPrompt, userPrompt);
-      if (text) return text.slice(0, 500);
+      if (text) return text.slice(0, 1800);
     } catch (error) {
       console.error("AI reply failed:", error.message);
     }
@@ -248,14 +266,17 @@ async function makeReply(ctx, { direct = false } = {}) {
     reply = await generateAIReply(ctx, side, direct);
   }
 
-  await ctx.reply(reply, {
+  const sent = await ctx.reply(reply, {
     reply_parameters: { message_id: ctx.message.message_id },
   });
+
+  addBotToMemory(ctx.chat.id, reply);
+  return sent;
 }
 
 bot.start(async (ctx) => {
   await ctx.reply(
-    "من نرگس کوچولوام 😌 تو گروه هم خودم گهگاهی می‌پرم وسط بحث؛ اگه صدام کنی باید جواب بدم 😂\n\n/id برای آیدی عددی\n/ping برای تست\n/narges برای صدا زدن مستقیم"
+    "من نرگس کوچولوام 😌 تو گروه گاهی خودم می‌پرم وسط بحث؛ اگه صدام کنی هم می‌تونیم درست‌وحسابی گپ بزنیم 😂\n\n/id برای آیدی عددی\n/ping برای تست\n/narges برای صدا زدن مستقیم"
   );
 });
 
@@ -263,11 +284,11 @@ bot.command("id", async (ctx) => {
   await ctx.reply(`آیدی عددی شما: ${ctx.from.id}\nآیدی این چت: ${ctx.chat.id}`);
 });
 
-bot.command("ping", (ctx) => ctx.reply("بیدارم مهندس 😌 این اینترنت شماست که گاهی خوابش می‌بره 😂"));
+bot.command("ping", (ctx) => ctx.reply("بیدارم 😌 خانوم دکتر خیالتون راحت، فعلاً مهندس رو زیر نظر دارم 😂"));
 
 bot.command("narges", async (ctx) => {
   const text = ctx.message.text.replace(/^\/narges(@\w+)?\s*/i, "").trim();
-  if (text) addToMemory(ctx.chat.id, ctx.from, text);
+  if (text) addUserToMemory(ctx.chat.id, ctx.from, text);
   await ctx.sendChatAction("typing");
   await makeReply(ctx, { direct: true });
 });
@@ -278,7 +299,7 @@ bot.on(message("text"), async (ctx) => {
   const text = ctx.message.text?.trim();
   if (!text || text.startsWith("/")) return;
 
-  addToMemory(ctx.chat.id, ctx.from, text);
+  addUserToMemory(ctx.chat.id, ctx.from, text);
 
   const direct = isDirectlyAddressed(ctx, text);
   const randomHit = Math.random() < RESPONSE_RATE;
@@ -301,6 +322,8 @@ bot.launch()
   .then(() => {
     console.log("🌸 نرگس کوچولو بیدار شد!");
     console.log(`🤖 AI model: ${AI_MODEL}`);
+    console.log(`💜 Doctor bias: ${Math.round(DOCTOR_BIAS * 100)}%`);
+    console.log(`🧠 Memory: ${MEMORY_SIZE} messages`);
     console.log(`🎲 Random response rate: ${Math.round(RESPONSE_RATE * 100)}%`);
   })
   .catch((error) => {
