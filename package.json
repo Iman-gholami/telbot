@@ -1,0 +1,20 @@
+{
+  "name": "narges-koochooloo-telegram-bot",
+  "version": "1.0.0",
+  "private": true,
+  "description": "ربات تلگرام فارسی نرگس کوچولو؛ شوخ، صمیمی و مناسب کل‌کل دوستانه در گروه",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "check": "node --check src/index.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "dotenv": "^17.2.2",
+    "telegraf": "^4.16.3"
+  }
+}
