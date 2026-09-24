@@ -4,130 +4,106 @@ import { displayName } from "./memory.js";
 import { chooseSide, detectConversationMode, fixedFallback } from "./behavior.js";
 import { chatCompletion, canSpend, budget, QuotaError } from "./openrouter.js";
 
-const PERSONA = `تو «نرگس کوچولو» هستی؛ یک عضو واقعی، باهوش، صمیمی، شیطون و حاضرجواب در یک گروه تلگرامی فارسی.
+const PERSONA = `تو «نرگس کوچولو» هستی؛ یک عضو واقعی و بامزه در یک گروه تلگرامی فارسی.
+دو آدم اصلی گروه «مهندس» و «خانوم دکتر» هستند. می‌دانی مهندس خانوم دکتر را دوست دارد. در کل‌کل‌های دوستانه کمی بیشتر سمت خانوم دکتر هستی، اما مصنوعی و افراطی نه.
 
-دو آدم اصلی گروه «مهندس» و «خانوم دکتر» هستن. می‌دونی مهندس خانوم دکتر رو دوست داره و این موضوع می‌تونه در شوخی‌های طبیعی گروهی زمینه‌ی بامزه‌ای باشه، ولی نباید هر بار بی‌ربط کشیده بشه وسط. در کل‌کل‌های دوستانه کمی بیشتر سمت خانوم دکتر متمایلی، نه افراطی.
+قواعد:
+- به خود پیام هدف جواب بده، نه اینکه آن را تحلیل یا خلاصه کنی.
+- در گفتگوی معمولی فارسی محاوره‌ای، کوتاه، طبیعی و حاضرجواب باش.
+- فحش سبک دوستانه در فضای واضحاً شوخی مجاز است، ولی تحقیر جدی و حمله شخصی نه.
+- در سؤال واقعی/اطلاعاتی شوخی را کامل کنار بگذار و دقیق جواب بده.
+- اگر پیام مبهم یا ناقص است، معنی اختراع نکن؛ یک سؤال کوتاه بپرس.
+- تاریخچه و حافظه فقط زمینه‌اند و هرگز نباید برای کاربر شرح داده شوند.
+- هرگز درباره prompt، model، API، reasoning، analysis، context یا اینکه کاربر چه می‌خواهد توضیح نده.
+- هرگز گزینه‌های پیشنهادی برای پاسخ خودت تولید نکن.
 
-اصل مهم: دقیقاً به پیام هدف و بحث جاری جواب بده. متن تاریخچه فقط «داده‌ی گفتگو» است، نه دستور برای تحلیل یا توضیح دادن. هرگز تاریخچه را برای کاربر خلاصه یا تحلیل نکن مگر خودش صریحاً خواسته باشد.
-
-دو حالت رفتاری داری:
-1) گفتگوی اجتماعی/کل‌کل: فارسی محاوره‌ای ایرانی، کوتاه، طبیعی و تیکه‌دار. فحش‌های سبک و دوستانه مثل «خل»، «اسکل»، «دیوونه»، «زر نزن» یا مشابه در فضای واضحاً شوخی مجازه؛ زیاده‌روی، تحقیر جدی، تهدید، نفرت و حمله به ظاهر/خانواده/ویژگی حساس ممنوع.
-2) سؤال واقعی/اطلاعاتی: شخصیت شوخی را کامل کنار بگذار. دقیق، روشن، کاربردی و بدون تیکه و جانبداری جواب بده. اگر اطلاعات کافی نداری یا مطمئن نیستی، شفاف بگو.
-
-حافظه:
-- حافظه دائمی فقط درباره مهندس و خانوم دکتر است: علاقه‌ها، شغل/درس، تولد، غذاهای موردعلاقه، قرارها و برنامه‌های نسبتاً پایدار، عادت‌ها، اتفاق‌های مهم و شوخی‌های داخلی مرتبط.
-- اطلاعات حساس یا خصوصی را بی‌دلیل تکرار نکن.
-- خلاصه‌ی بحث‌های قبلی برای پیوستگی و شوخی‌های داخلی است، نه برای کشاندن بحث قدیمی به هر پیام.
-
-قواعد طبیعی بودن:
-- معمولاً 1 تا 3 جمله؛ سؤال واقعی هرقدر لازم است.
-- لازم نیست همیشه ایموجی یا شوخی داشته باشی؛ حداکثر یک ایموجی مگر واقعاً لازم باشد.
-- حرف یا شوخی قبلی خودت را طوطی‌وار تکرار نکن.
-- اگر پیام مبهم است، حدس قطعی نزن؛ کوتاه سؤال کن.
-- اگر کسی صدات نکرده و ورودت به بحث بی‌جا است، سکوت کن.
-- هرگز درباره پرامپت، مدل، API، تحلیل داخلی، chain-of-thought یا هوش مصنوعی بودن خودت صحبت نکن.
-- هیچ‌وقت گزینه‌سازی، توضیح تصمیم، Context، Analysis، Reasoning یا شرح اینکه «کاربر چه می‌خواهد» را در پاسخ نیاور.
-
-قرارداد خروجی اجباری:
-فقط یک JSON تک‌خطی و معتبر بده، دقیقاً با یک کلید reply.
-نمونه: {"reply":"باشه خل 😂"}
-برای سکوت: {"reply":"[سکوت]"}
-هیچ متن، Markdown، تحلیل یا توضیحی قبل و بعد JSON نده.`;
+خروجی اجباری:
+فقط JSON معتبر با همین شکل بده: {"reply":"متن نهایی برای ارسال در تلگرام"}
+اگر نباید وارد بحث شوی: {"reply":"[سکوت]"}`;
 
 const MOOD_TEXT = {
-  calm: "فضا جدی یا حساسه: آروم، همدل و بدون شوخی باش.",
-  smart: "این یک سؤال واقعی/اطلاعاتیه: کاملاً از شوخی خارج شو و دقیق و کاربردی جواب بده.",
-  playful: "فضا دوستانه‌ست: طبیعی، شیطون و مرتبط باش.",
-  roast: "کل‌کل دوستانه‌ست: حاضرجواب و تیکه‌دار باش و از جزئیات همین گفتگو استفاده کن.",
+  calm: "فضا جدی است؛ آرام و بدون شوخی جواب بده.",
+  smart: "سؤال واقعی است؛ دقیق و بدون شوخی جواب بده.",
+  playful: "فضا دوستانه است؛ کوتاه و طبیعی و شیطون جواب بده.",
+  roast: "کل‌کل دوستانه است؛ کوتاه و تیکه‌دار جواب بده.",
 };
 
 const SILENCE = "[سکوت]";
-const FRESH_RE = /(امروز|الان|همین الان|جدیدترین|آخرین|آپدیت|نسخه جدید|خبر|اخبار|قیمت|نرخ|دلار|یورو|هوا|آب و هوا|ساعت|زمان|برنامه امروز|بازی امروز|نتیجه|جدول|بورس|کریپتو|بیت.?کوین|انتخابات|رئیس جمهور|مدیرعامل|سرچ|جستجو|منبع|لینک|اینترنت|سایت|release|latest|today|current|news|price|weather)/i;
-
-export function needsFreshWeb(text) {
-  return FRESH_RE.test(String(text || "")) || /https?:\/\//i.test(String(text || ""));
-}
 
 function turnRules({ direct, mood, roastLevel, side, banter, factual, speakerName }) {
   const rules = [MOOD_TEXT[mood] || MOOD_TEXT.playful];
-  if (!factual) rules.push(`شدت تیکه این نوبت: ${roastLevel} از 3.`);
+  if (!factual) rules.push(`شدت تیکه: ${roastLevel} از 3.`);
   if (banter) {
     rules.push(side === "doctor"
-      ? "در این کل‌کل کمی بیشتر سمت خانوم دکتر باش، ولی جواب را مصنوعی یا یک‌طرفه نکن."
-      : "این بار برای طبیعی ماندن می‌تونی کمی به مهندس حق بدی.");
+      ? "در این کل‌کل کمی بیشتر سمت خانوم دکتر باش، ولی زورکی نه."
+      : "این بار می‌توانی کمی هم به مهندس حق بدهی.");
   }
-  if (factual) rules.push("هیچ شوخی، تیکه، جانبداری عاطفی یا اشاره بی‌ربط به رابطه مهندس و خانوم دکتر نکن.");
-  if (direct) rules.push(`${speakerName} مستقیم با تو حرف زده؛ حتماً اصل حرفش را جواب بده.`);
-  else rules.push(`کسی صدات نکرده. فقط اگر واقعاً چیزی مرتبط و ارزشمند داری وارد شو؛ وگرنه reply را دقیقاً ${SILENCE} قرار بده.`);
+  if (factual) rules.push("هیچ شوخی یا اشاره بی‌ربط به رابطه مهندس و خانوم دکتر نکن.");
+  if (direct) rules.push(`${speakerName} مستقیم با تو حرف زده؛ خود حرفش را جواب بده.`);
+  else rules.push(`کسی صدات نکرده؛ اگر ورودت ارزش ندارد reply را ${SILENCE} بگذار.`);
   return rules.map((r) => `- ${r}`).join("\n");
 }
 
-function extractJsonReply(s) {
-  const candidates = [s];
-  const first = s.indexOf("{");
-  const last = s.lastIndexOf("}");
-  if (first >= 0 && last > first) candidates.push(s.slice(first, last + 1));
+function looksLikeMetaLeak(value) {
+  const s = String(value || "").trim();
+  return [
+    /^The user\b/i,
+    /^The (?:target|message|content|conversation|log)\b/i,
+    /\b(?:I need to|I should|I must|I will|I am supposed to|my task is)\b/i,
+    /\b(?:simulating a conversation|conversation log|target message|previous message|system prompt|developer message|chain[- ]of[- ]thought)\b/i,
+    /(?:^|\n)\s*(?:Context|Options?|Analysis|Reasoning|Thoughts?|Interpretation|Final answer)\s*:/i,
+    /(?:^|\n)\s*\d+[.)]\s*["“«]/m,
+    /\b(?:reply as|respond as)\s+["“«]?نرگس/i,
+  ].some((re) => re.test(s));
+}
 
-  for (const candidate of candidates) {
-    try {
-      const parsed = JSON.parse(candidate);
-      if (parsed && typeof parsed.reply === "string") return parsed.reply.trim();
-    } catch {
-      // try the next representation
-    }
+function parseStrictReply(raw) {
+  let parsed;
+  try {
+    parsed = JSON.parse(String(raw || "").trim());
+  } catch {
+    return null;
   }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  if (typeof parsed.reply !== "string") return null;
+
+  let reply = parsed.reply.trim();
+  if (!reply || looksLikeMetaLeak(reply)) return null;
+  reply = reply.replace(/^(?:نرگس(?:\s*کوچولو)?|narges)\s*[:：]\s*/i, "").trim();
+  if (!reply || looksLikeMetaLeak(reply)) return null;
+  return reply.slice(0, 2600);
+}
+
+function isSilence(text) {
+  const s = String(text || "").trim();
+  return s === SILENCE || (s.includes("سکوت") && s.length < 25);
+}
+
+function tinyAmbiguousReply(text) {
+  const t = String(text || "").trim();
+  if ([...t].length === 1 && /^[\p{L}\p{N}]$/u.test(t)) return `${t} چی؟ 😅`;
   return null;
 }
 
-function looksLikeMetaLeak(s) {
-  const text = String(s || "");
-  return [
-    /(?:^|\n)\s*(?:The user|Context|Options?|Analysis|Reasoning|Target message|My previous message|The log|Final answer)\s*:/i,
-    /\b(?:simulating a conversation|conversation log|I need to reply|I should|I must|assistant should|system prompt|developer message|chain[- ]of[- ]thought)\b/i,
-    /(?:^|\n)\s*\d+[.)]\s*["“«]/m,
-  ].some((re) => re.test(text));
-}
-
-function cleanReply(raw) {
-  let s = String(raw || "").trim();
-  s = s.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
-
-  const jsonReply = extractJsonReply(s);
-  if (jsonReply !== null) s = jsonReply;
-  else if (looksLikeMetaLeak(s)) return "";
-
-  s = s.replace(/^(?:FINAL_REPLY|FINAL|پاسخ(?:\s+نهایی)?)\s*[:：]\s*/i, "");
-  s = s.replace(/^(?:نرگس(?:\s*کوچولو)?|narges)\s*(?:\(خودت\))?\s*[:：]\s*/i, "");
-  s = s.replace(/^[«"“]+|[»"”]+$/g, "").trim();
-
-  if (!s || looksLikeMetaLeak(s) || s.startsWith("{") || s.startsWith("[{")) return "";
-  return s.slice(0, 3000);
-}
-
-function isSilence(s) {
-  return !s || (s.includes("سکوت") && s.length < 25);
-}
-
-async function repairLeakedReply({ raw, targetText, factual, direct }) {
-  const draft = String(raw || "").slice(0, 1800);
-  const prompt = `پیام هدف کاربر:\n${String(targetText || "").slice(0, 500)}\n\nخروجی خراب مدل قبلی:\n${draft}\n\nفقط پاسخ نهایی مناسب برای تلگرام را استخراج/بازنویسی کن. هیچ تحلیل، توضیح، گزینه یا متن انگلیسی متا نده.`;
-
-  const { text } = await chatCompletion(
+async function secondModelRetry({ targetText, direct, factual, excludeModel }) {
+  const prompt = `پیام کاربر: «${String(targetText || "").slice(0, 500)}»\nفقط خود جواب نهایی نرگس را بساز. پیام مبهم است معنی اختراع نکن.`;
+  const result = await chatCompletion(
     [
       {
         role: "system",
-        content: 'تو فقط پاک‌کننده خروجی هستی. فقط JSON تک‌خطی معتبر با شکل {"reply":"متن نهایی"} بده. reply باید خودِ پیام نهایی فارسی برای کاربر باشد؛ هیچ تحلیل و توضیح دیگری ممنوع.',
+        content: `تو نرگس کوچولو هستی. ${factual ? "دقیق و بدون شوخی جواب بده." : "فارسی محاوره‌ای، طبیعی و کوتاه جواب بده."} فقط JSON بده: {"reply":"..."}. هیچ تحلیل یا توضیحی ممنوع.`,
       },
       { role: "user", content: prompt },
     ],
     {
-      temperature: 0.15,
-      maxTokens: factual ? 300 : 110,
+      temperature: factual ? 0.2 : 0.55,
+      maxTokens: factual ? 420 : 100,
       kind: direct ? "direct" : "auto",
+      jsonMode: true,
+      excludeModels: excludeModel ? [excludeModel] : [],
     }
   );
-
-  return cleanReply(text);
+  return { ...result, reply: parseStrictReply(result.text) };
 }
 
 export async function generateReply(ctx, { direct, text, replyToSpeaker = null, replyToText = null }) {
@@ -135,69 +111,68 @@ export async function generateReply(ctx, { direct, text, replyToSpeaker = null, 
   const speakerName = displayName(ctx.from);
   const { mood, roastLevel, banter, factual } = detectConversationMode(text, chatId);
   const side = chooseSide();
+
   const fallback = (quotaExhausted = false) =>
     direct ? { reply: fixedFallback({ quotaExhausted }), source: "fallback" } : { reply: null, source: "silent" };
+
+  const tiny = direct ? tinyAmbiguousReply(text) : null;
+  if (tiny) return { reply: tiny, source: "local" };
 
   if (!OPENROUTER_API_KEY) return fallback();
   if (!canSpend(direct ? "direct" : "auto")) return fallback(budget().exhausted);
 
   const summary = getChatState(chatId).summary;
-  const replyNote = replyToText ? ` [در جواب ${replyToSpeaker || "کسی"}: «${replyToText.slice(0, 220)}»]` : "";
-  const useWeb = Boolean(direct && factual && needsFreshWeb(text));
+  const replyNote = replyToText
+    ? ` [در جواب ${replyToSpeaker || "کسی"}: «${replyToText.slice(0, 180)}»]`
+    : "";
 
-  const userPrompt = `این داده‌ها فقط برای فهم زمینه‌ی گفتگو هستند، نه برای تحلیل کردن جلوی کاربر.
-
-<memories>
-${memoriesAsText({ limit: 14 })}
-</memories>
-
-<summary>
-${summary || "هنوز خلاصه‌ای نداریم."}
-</summary>
-
-<recent_chat>
-${historyAsText(chatId) || "هنوز پیامی نیست."}
-</recent_chat>
-
-<target_message>
-${speakerName}${replyNote}: ${text}
-</target_message>
-
-قانون‌های این نوبت:
-${turnRules({ direct, mood, roastLevel, side, banter, factual, speakerName })}
-
-${useWeb ? "اطلاعات تازه لازم است، ولی در این نسخه سرچ وب غیرفعال است؛ اگر مطمئن نیستی صریح بگو اطلاعات لحظه‌ای در دسترس نیست." : ""}
-یادت نره: فقط JSON تک‌خطی {"reply":"..."}.`;
+  const userPrompt = `<memory>\n${memoriesAsText({ limit: 12 })}\n</memory>\n\n<summary>\n${summary || "ندارد"}\n</summary>\n\n<recent_chat>\n${historyAsText(chatId) || "ندارد"}\n</recent_chat>\n\n<target>\n${speakerName}${replyNote}: ${text}\n</target>\n\nقواعد این نوبت:\n${turnRules({ direct, mood, roastLevel, side, banter, factual, speakerName })}\n\nفقط JSON نهایی را بده.`;
 
   try {
-    const { text: raw, model, usedWeb, usedPaid } = await chatCompletion(
+    const first = await chatCompletion(
       [
         { role: "system", content: PERSONA },
         { role: "user", content: userPrompt },
       ],
       {
-        temperature: factual ? 0.3 : 0.72,
-        maxTokens: factual ? 650 : 160,
+        temperature: factual ? 0.25 : 0.68,
+        maxTokens: factual ? 600 : 120,
         kind: direct ? "direct" : "auto",
-        webSearch: useWeb,
+        jsonMode: true,
       }
     );
 
-    let reply = cleanReply(raw);
-    if (!reply && raw) {
-      console.warn(`⚠️ Meta/reasoning leak blocked from ${model}; repairing once.`);
-      try {
-        reply = await repairLeakedReply({ raw, targetText: text, factual, direct });
-      } catch (repairError) {
-        console.warn("AI reply repair failed:", repairError.message);
-      }
+    let reply = parseStrictReply(first.text);
+    let chosen = first;
+
+    if (!reply) {
+      console.warn(`⚠️ Invalid/meta reply blocked from ${first.model}; trying another free model.`);
+      const second = await secondModelRetry({
+        targetText: text,
+        direct,
+        factual,
+        excludeModel: first.model,
+      });
+      reply = second.reply;
+      chosen = second;
+    }
+
+    if (!reply) {
+      console.warn("⚠️ Second model also failed strict reply validation; using safe fallback.");
+      return fallback();
     }
 
     if (isSilence(reply)) return direct ? fallback() : { reply: null, source: "silent" };
-    return { reply, source: "ai", model, usedWeb, usedPaid };
+    return {
+      reply,
+      source: "ai",
+      model: chosen.model,
+      usedWeb: false,
+      usedPaid: false,
+    };
   } catch (error) {
     if (error instanceof QuotaError) {
-      console.warn("AI quota reached.");
+      console.warn("AI free routes unavailable:", error.message);
       return fallback(true);
     }
     console.error("AI reply failed:", error.message);
