@@ -2,25 +2,21 @@ import "dotenv/config";
 import { Telegraf } from "telegraf";
 import { message } from "telegraf/filters";
 
-const required = ["BOT_TOKEN"];
-for (const key of required) {
-  if (!process.env[key]) {
-    console.error(`Missing required environment variable: ${key}`);
-    process.exit(1);
-  }
+if (!process.env.BOT_TOKEN) {
+  console.error("Missing required environment variable: BOT_TOKEN");
+  process.exit(1);
 }
 
 const bot = new Telegraf(process.env.BOT_TOKEN);
 
 const ENGINEER_ID = Number(process.env.ENGINEER_ID || 0);
 const DOCTOR_ID = Number(process.env.DOCTOR_ID || 0);
-const RESPONSE_RATE = clampNumber(process.env.RESPONSE_RATE, 0.1, 0, 1);
-const FIXED_REPLY_RATE = clampNumber(process.env.FIXED_REPLY_RATE, 0.35, 0, 1);
-const MEMORY_SIZE = Math.max(1, Math.min(30, Number(process.env.MEMORY_SIZE || 10)));
-const AI_MODEL = process.env.AI_MODEL || "openrouter/free";
+const RESPONSE_RATE = clampNumber(process.env.RESPONSE_RATE, 0.10, 0, 1);
+const FIXED_REPLY_RATE = clampNumber(process.env.FIXED_REPLY_RATE, 0.15, 0, 1);
+const MEMORY_SIZE = Math.max(4, Math.min(30, Number(process.env.MEMORY_SIZE || 10)));
+const AI_MODEL = process.env.AI_MODEL || "google/gemma-4-31b-it:free";
+const FALLBACK_AI_MODEL = "openrouter/free";
 
-// حافظه کوتاه‌مدت هر چت در RAM نگه داشته می‌شود.
-// با restart شدن ربات پاک می‌شود که برای این ربات گروهی مناسب است.
 const memories = new Map();
 
 function clampNumber(value, fallback, min, max) {
@@ -42,7 +38,8 @@ function addToMemory(chatId, user, text) {
   const list = memories.get(chatId) || [];
   list.push({
     name: displayName(user),
-    text: text.trim().slice(0, 800),
+    userId: user?.id,
+    text: text.trim().slice(0, 1000),
   });
 
   while (list.length > MEMORY_SIZE) list.shift();
@@ -55,36 +52,30 @@ function memoryAsText(chatId) {
 }
 
 const engineerReplies = [
-  "خانوم دکتر من نمی‌خوام قضاوت کنم، ولی مهندس این دفعه زیادی منطقی حرف زد، خودمم نگران شدم 😂",
-  "رأی اولیه دادگاه نرگس کوچولو فعلاً به نفع مهندسه 😌 اعتراض هم پذیرفته میشه، اثر نداره 😂",
-  "خانوم دکتر مدارک کامل نیست؛ پرونده فعلاً به نفع مهندس بسته شد 😂",
-  "مهندس چیزی نگو، بذار من دفاعیاتتو جمع کنم، خودت خرابش نکنی 😭😂",
-  "من بی‌طرفم... فقط کاملاً اتفاقی صندلیم همیشه کنار مهندسه 😌😂",
-  "خانوم دکتر با احترام، این استدلال یه کم بوی باگ میده 😂",
-  "مهندس امروز یه حرف درست زد؛ لطفاً تاریخ رو یادداشت کنید 😭",
-  "خانوم دکتر این یکی رو بده به مهندس، قول میدم دفعه بعد یه جوری جبران کنم 😂",
-  "اعتراض خانوم دکتر ثبت شد و با موفقیت نادیده گرفته شد 😌😂",
-  "مهندس من پشتتم؛ البته اگه دوباره یه چیز عجیب نگی 😂",
+  "خانوم دکتر، من نمی‌خوام جانبداری کنم ولی این یکی رو مهندس تمیز زد 😂",
+  "اعتراض خانوم دکتر ثبت شد؛ نتیجه بررسی: مهندس فعلاً زنده موند 😌😂",
+  "مهندس چیزی نگو، همین الان وضعیت به نفعت بود، خرابش نکن 😭",
+  "خانوم دکتر این استدلال یه کم نیاز به آپدیت نرم‌افزاری داره 😂",
+  "من بی‌طرفم؛ فقط قطب‌نمای من هی سمت مهندس می‌چرخه 😌",
+  "مهندس امروز یه حرف درست زد، لطفاً این لحظه تاریخی رو ثبت کنید 😂",
+  "خانوم دکتر این راند رو بده به مهندس، بذار یه شب با اعتمادبه‌نفس بخوابه 😭😂",
+  "مهندس پشتتم؛ البته تا وقتی خودت شروع نکنی علیه خودت مدرک تولید کنی 😂",
 ];
 
 const doctorReplies = [
-  "مهندس من طرف شما هستم، ولی حمایت هم یه سقفی داره 😭😂",
-  "مهندس این یکی قابل دفاع نیست؛ من وکیلم، شعبده‌باز که نیستم 😂",
-  "خانوم دکتر این دفعه حرف بدی نزد... خودمم از گفتنش ناراحتم 😐😂",
-  "مهندس لطفاً پنج دقیقه حرف نزن تا بتونم دوباره طرفتو بگیرم 😂",
-  "با نهایت تأسف، دادگاه نرگس کوچولو این یکی رو به خانوم دکتر داد 😔😂",
-  "مهندس این یکی رو جمع کن، من ندیدم، خانوم دکترم ندیده... امیدوارم 😂",
-  "خانوم دکتر یه امتیاز گرفت؛ مهندس هنوز درخواست VAR داده 😂",
-  "مهندس داداش این بار خودت رفتی تو تله، من فقط شاهد بودم 😭",
-  "من می‌خواستم طرف مهندس رو بگیرم، بعد پیامشو خوندم... منصرف شدم 😂",
-  "خانوم دکتر این راند مال شما؛ زیاد ذوق نکنید، من هنوز نرگسم 😌😂",
+  "مهندس من طرفتم، ولی این یکی رو واقعاً با چه رویی دفاع کنم؟ 😭😂",
+  "خانوم دکتر این یکی رو خوب گرفت؛ مهندس فعلاً درخواست VAR داده 😂",
+  "مهندس پنج دقیقه سکوت کن شاید بتونم پرونده رو نجات بدم 😐😂",
+  "این دفعه خانوم دکتر بد نگفت... گفتنش برای منم درد داشت 😭",
+  "مهندس داداش خودت با پای خودت رفتی تو تله، من فقط گزارشگرم 😂",
+  "من اومدم طرف مهندس رو بگیرم، پیامشو خوندم، نظرم عوض شد 😭😂",
 ];
 
-const generalReplies = [
-  "من چیزی نمی‌گم... فقط دارم با علاقه سقوط اوضاع رو تماشا می‌کنم 😂",
-  "ادامه بدید، نرگس کوچولو برای پرونده مستندات جمع می‌کنه 😌",
-  "این بحث داره به جاهای خوبی می‌رسه، پاپ‌کورن من کو؟ 😂",
-  "من اومدم آروم کنم، ولی راستش خودم بیشتر دوست دارم شلوغش کنم 😭😂",
+const directFallbackReplies = [
+  "جانم؟ نرگس کوچولو در خدمت حاشیه‌سازی 😂",
+  "هستم، بگو ببینم این دفعه کیو باید الکی محکوم کنیم 😌",
+  "صدام کردی؟ امیدوارم برای کار خیر نباشه 😂",
+  "بله؟ من آماده‌ام اوضاع آروم رو غیرضروری پیچیده کنم 😭😂",
 ];
 
 function pick(list) {
@@ -92,19 +83,37 @@ function pick(list) {
 }
 
 function chooseSide() {
-  // حدود 80٪ سمت مهندس، 20٪ سمت خانوم دکتر / علیه مهندس برای طبیعی‌تر شدن.
   return Math.random() < 0.8 ? "engineer" : "doctor";
 }
 
-function fixedReply(side) {
-  if (side === "engineer") return pick(engineerReplies);
-  if (side === "doctor") return pick(doctorReplies);
-  return pick(generalReplies);
+function fixedReply(side, direct = false) {
+  if (direct) return pick(directFallbackReplies);
+  return side === "engineer" ? pick(engineerReplies) : pick(doctorReplies);
+}
+
+function normalizePersian(text = "") {
+  return text
+    .toLowerCase()
+    .replace(/ي/g, "ی")
+    .replace(/ك/g, "ک")
+    .replace(/[‌\u200c]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function isDirectlyAddressed(ctx, text) {
-  const normalized = text.toLowerCase();
-  if (normalized.includes("نرگس")) return true;
+  const normalized = normalizePersian(text);
+
+  const callNames = [
+    "نرگس",
+    "نرگس کوچولو",
+    "نرگسی",
+    "خانوم نرگس",
+    "خانم نرگس",
+    "narges",
+  ];
+
+  if (callNames.some((name) => normalized.includes(name))) return true;
 
   const username = ctx.botInfo?.username?.toLowerCase();
   if (username && normalized.includes(`@${username}`)) return true;
@@ -115,93 +124,128 @@ function isDirectlyAddressed(ctx, text) {
   return false;
 }
 
-function buildSystemPrompt(side) {
+function buildSystemPrompt(side, speakerName, direct) {
   const sideRule =
     side === "engineer"
-      ? "در کل‌کل‌ها معمولاً با ظرافت بیشتر طرف مهندس را بگیر، اما جوری نباشد که هر بار کاملاً تابلو باشد."
-      : "این بار می‌توانی به مهندس هم تیکه بیندازی یا کمی سمت خانوم دکتر باشی تا شخصیتت طبیعی و غیرقابل‌پیش‌بینی بماند.";
+      ? "اگر بین مهندس و خانوم دکتر کل‌کل است، معمولاً با ظرافت سمت مهندس باش؛ نه آن‌قدر تابلو که مصنوعی شود."
+      : "این بار اجازه داری مهندس را هم دست بیندازی یا کمی سمت خانوم دکتر باشی تا شوخی‌ها تکراری نشوند.";
 
-  return `
-تو «نرگس کوچولو» هستی؛ یک شخصیت بامزه در گروه تلگرام فارسی.
+  const directRule = direct
+    ? `الان ${speakerName} مستقیماً تو را صدا زده یا به تو جواب داده. اول حرف همان شخص را بفهم و دقیقاً به همان پیام واکنش نشان بده؛ جواب عمومی و بی‌ربط نده.`
+    : "الان بدون صدا زدنت وارد گفتگو می‌شوی؛ فقط وقتی واقعاً چیزی بامزه و مرتبط داری حرف بزن.";
 
-شخصیتت:
-- فارسی محاوره‌ای، کوتاه و طبیعی حرف می‌زنی.
-- شیطون، صمیمی، طعنه‌زن و اهل کل‌کل دوستانه‌ای.
-- معمولاً جواب در حد یک یا دو جمله است.
-- گاهی از ایموجی‌هایی مثل 😂 😭 😌 😐 استفاده می‌کنی، نه در همه جواب‌ها.
-- خودت را مثل یک دستیار رسمی معرفی نمی‌کنی و درباره مدل یا API حرف نمی‌زنی.
-- «مهندس» و «خانوم دکتر» دو شخصیت اصلی گروه هستند.
+  return `تو «نرگس کوچولو» هستی؛ عضو شیطون یک گروه تلگرامی فارسی، نه یک دستیار رسمی.
+
+هویت و لحن:
+- فارسی کاملاً محاوره‌ای و طبیعی ایرانی بنویس.
+- جواب کوتاه باشد: ترجیحاً 5 تا 22 کلمه، حداکثر دو جمله.
+- شوخی باید از خودِ موضوع پیام دربیاید؛ جمله آماده و بی‌ربط نگو.
+- شیطون، صمیمی، حاضر جواب، کمی طعنه‌زن و تیکه‌انداز باش.
+- فحش خیلی سبک و دوستانه مثل «خل»، «اسکل»، «دیوونه» فقط وقتی به فضای شوخی می‌خورد مجاز است؛ زیاده‌روی نکن.
+- معمولاً یک punchline کوتاه بهتر از توضیح طولانی است.
+- گاهی ایموجی 😂 😭 😌 🙄 استفاده کن، نه در هر جواب و نه چندتا پشت سر هم.
+- هرگز نگو «به عنوان هوش مصنوعی»، «مدل»، «API»، «نمی‌توانم نقش‌آفرینی کنم» و چیزهای رباتی.
+- اطلاعاتی درباره افراد اختراع نکن و اتهام واقعی نساز.
+- اگر گفتگو جدی/حساس شد، شوخی سبک و بی‌آزار بکن و دعوا را تشدید نکن.
+
+افراد اصلی:
+- مهندس: معمولاً عزیزکرده توست و بیشتر سمت اویی، ولی گاهی خودش را هم می‌زنی.
+- خانوم دکتر: با او هم صمیمی هستی و تیکه‌ها باید دوستانه بماند.
+
+قانون این نوبت:
 - ${sideRule}
-- فحش فقط خیلی سبک و دوستانه؛ از توهین سنگین، تهدید، تحقیر جدی، نفرت‌پراکنی، اتهام واقعی یا آزار هدفمند دوری کن.
-- اگر بحث حساس یا جدی شد، به جای شعله‌ور کردن دعوا یک شوخی سبک و بی‌خطر بکن.
-- چیزهایی را که در پیام‌های اخیر نیستند از خودت به عنوان واقعیت درباره آدم‌ها نساز.
-- پاسخ را فقط به فارسی بده.
-`;
+- ${directRule}
+
+نمونه جنس جواب خوب:
+مهندس: «من که چیزی نگفتم»
+نرگس: «آره مهندس، شما معمولاً بعد از گفتن همه‌چی می‌گی چیزی نگفتم 😂»
+
+خانوم دکتر: «این باز شروع کرد»
+نرگس: «خانوم دکتر من وکیلمه، معجزه‌گر نیستم؛ یه فرصت به مهندس بدید خودش خرابش کنه 😂»
+
+مهندس: «نرگس تو طرف کی‌ای؟»
+نرگس: «من؟ کاملاً بی‌طرفم مهندس، فقط بی‌طرفیم یه مقدار به سمت شما کجه 😌»
+
+فقط خود جواب نرگس را بده؛ بدون گیومه، توضیح یا اسم گوینده.`;
 }
 
-async function generateAIReply(chatId, side) {
+async function callOpenRouter(model, systemPrompt, userPrompt) {
+  const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
+      "Content-Type": "application/json",
+      "X-Title": "Narges Koochooloo Telegram Bot",
+    },
+    body: JSON.stringify({
+      model,
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt },
+      ],
+      temperature: 0.95,
+      max_tokens: 100,
+    }),
+  });
+
+  if (!response.ok) {
+    const details = (await response.text()).slice(0, 500);
+    throw new Error(`${model} -> OpenRouter ${response.status}: ${details}`);
+  }
+
+  const data = await response.json();
+  const content = data?.choices?.[0]?.message?.content;
+
+  if (typeof content === "string") return content.trim();
+
+  if (Array.isArray(content)) {
+    return content
+      .map((part) => (typeof part === "string" ? part : part?.text || ""))
+      .join("")
+      .trim();
+  }
+
+  return "";
+}
+
+async function generateAIReply(ctx, side, direct) {
   if (!process.env.OPENROUTER_API_KEY) {
-    return fixedReply(side);
+    console.warn("OPENROUTER_API_KEY is missing; using fixed replies.");
+    return fixedReply(side, direct);
   }
 
-  const conversation = memoryAsText(chatId) || "هنوز پیام کافی در حافظه نیست.";
+  const chatId = ctx.chat.id;
+  const currentText = ctx.message?.text?.trim() || "";
+  const speakerName = displayName(ctx.from);
+  const conversation = memoryAsText(chatId) || "هنوز سابقه‌ای نداریم.";
 
-  try {
-    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
-        "Content-Type": "application/json",
-        "X-Title": "Narges Koochooloo Telegram Bot",
-      },
-      body: JSON.stringify({
-        model: AI_MODEL,
-        messages: [
-          { role: "system", content: buildSystemPrompt(side) },
-          {
-            role: "user",
-            content: `این‌ها پیام‌های اخیر گروه هستند:\n\n${conversation}\n\nیک واکنش کوتاه، بامزه و مرتبط از طرف نرگس کوچولو بنویس. فقط متن جواب را بده.`,
-          },
-        ],
-        temperature: 1.05,
-        max_tokens: 120,
-      }),
-    });
+  const systemPrompt = buildSystemPrompt(side, speakerName, direct);
+  const userPrompt = `پیام‌های اخیر گروه (قدیمی به جدید):\n${conversation}\n\nپیام فعلی که باید به آن واکنش نشان بدهی:\n${speakerName}: ${currentText}\n\nبه همان پیام فعلی، با توجه به زمینه بالا، یک جواب کوتاه و بامزه بده.`;
 
-    if (!response.ok) {
-      const details = (await response.text()).slice(0, 300);
-      throw new Error(`OpenRouter ${response.status}: ${details}`);
+  const models = AI_MODEL === FALLBACK_AI_MODEL
+    ? [AI_MODEL]
+    : [AI_MODEL, FALLBACK_AI_MODEL];
+
+  for (const model of models) {
+    try {
+      const text = await callOpenRouter(model, systemPrompt, userPrompt);
+      if (text) return text.slice(0, 500);
+    } catch (error) {
+      console.error("AI reply failed:", error.message);
     }
-
-    const data = await response.json();
-    const content = data?.choices?.[0]?.message?.content;
-
-    let text = "";
-    if (typeof content === "string") {
-      text = content.trim();
-    } else if (Array.isArray(content)) {
-      text = content
-        .map((part) => (typeof part === "string" ? part : part?.text || ""))
-        .join("")
-        .trim();
-    }
-
-    if (!text) return fixedReply(side);
-    return text.slice(0, 700);
-  } catch (error) {
-    console.error("AI reply failed:", error.message);
-    return fixedReply(side);
   }
+
+  return fixedReply(side, direct);
 }
 
-async function makeReply(ctx, forced = false) {
+async function makeReply(ctx, { direct = false } = {}) {
   const side = chooseSide();
 
   let reply;
-  if (!forced && Math.random() < FIXED_REPLY_RATE) {
-    reply = fixedReply(side);
+  if (!direct && Math.random() < FIXED_REPLY_RATE) {
+    reply = fixedReply(side, false);
   } else {
-    reply = await generateAIReply(ctx.chat.id, side);
+    reply = await generateAIReply(ctx, side, direct);
   }
 
   await ctx.reply(reply, {
@@ -211,23 +255,21 @@ async function makeReply(ctx, forced = false) {
 
 bot.start(async (ctx) => {
   await ctx.reply(
-    "من نرگس کوچولوام 😌 منو بندازید تو گروه؛ گاهی خودم وسط بحث می‌پرم و گاهی هم صدام کنید 😂\n\nبرای دیدن آیدی عددی خودت: /id"
+    "من نرگس کوچولوام 😌 تو گروه هم خودم گهگاهی می‌پرم وسط بحث؛ اگه صدام کنی باید جواب بدم 😂\n\n/id برای آیدی عددی\n/ping برای تست\n/narges برای صدا زدن مستقیم"
   );
 });
 
 bot.command("id", async (ctx) => {
-  await ctx.reply(
-    `آیدی عددی شما: ${ctx.from.id}\nآیدی این چت: ${ctx.chat.id}`
-  );
+  await ctx.reply(`آیدی عددی شما: ${ctx.from.id}\nآیدی این چت: ${ctx.chat.id}`);
 });
 
-bot.command("ping", (ctx) => ctx.reply("نرگس بیداره 😌"));
+bot.command("ping", (ctx) => ctx.reply("بیدارم مهندس 😌 این اینترنت شماست که گاهی خوابش می‌بره 😂"));
 
 bot.command("narges", async (ctx) => {
   const text = ctx.message.text.replace(/^\/narges(@\w+)?\s*/i, "").trim();
   if (text) addToMemory(ctx.chat.id, ctx.from, text);
   await ctx.sendChatAction("typing");
-  await makeReply(ctx, true);
+  await makeReply(ctx, { direct: true });
 });
 
 bot.on(message("text"), async (ctx) => {
@@ -241,22 +283,30 @@ bot.on(message("text"), async (ctx) => {
   const direct = isDirectlyAddressed(ctx, text);
   const randomHit = Math.random() < RESPONSE_RATE;
 
-  // اگر اسم نرگس آمده یا روی پیامش reply شده، همیشه جواب می‌دهد.
-  // در بقیه پیام‌ها تقریباً 1 از هر 10 بار وارد بحث می‌شود.
   if (!direct && !randomHit) return;
 
-  await ctx.sendChatAction("typing");
-  await makeReply(ctx, direct);
+  try {
+    await ctx.sendChatAction("typing");
+    await makeReply(ctx, { direct });
+  } catch (error) {
+    console.error("Reply error:", error.message);
+  }
 });
 
 bot.catch((error, ctx) => {
-  console.error(`Telegram error in update ${ctx.update.update_id}:`, error);
+  console.error(`Telegram error in update ${ctx.update?.update_id}:`, error);
 });
 
-await bot.launch();
-console.log("🌸 نرگس کوچولو بیدار شد!");
-console.log(`AI model: ${AI_MODEL}`);
-console.log(`Random response rate: ${RESPONSE_RATE}`);
+bot.launch()
+  .then(() => {
+    console.log("🌸 نرگس کوچولو بیدار شد!");
+    console.log(`🤖 AI model: ${AI_MODEL}`);
+    console.log(`🎲 Random response rate: ${Math.round(RESPONSE_RATE * 100)}%`);
+  })
+  .catch((error) => {
+    console.error("Failed to start Telegram bot:", error);
+    process.exit(1);
+  });
 
 process.once("SIGINT", () => bot.stop("SIGINT"));
 process.once("SIGTERM", () => bot.stop("SIGTERM"));
