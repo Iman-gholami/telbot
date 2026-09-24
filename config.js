@@ -16,11 +16,6 @@ function list(value) {
   return [...new Set(String(value || "").split(",").map((x) => x.trim()).filter(Boolean))];
 }
 
-function bool(value, fallback = false) {
-  if (value === undefined || value === null || String(value).trim() === "") return fallback;
-  return /^(1|true|yes|on)$/i.test(String(value).trim());
-}
-
 const env = process.env;
 
 export const BOT_TOKEN = env.BOT_TOKEN;
@@ -30,19 +25,28 @@ export const ADMIN_IDS = list(env.ADMIN_IDS).map(Number).filter(Number.isFinite)
 export const ALLOWED_CHAT_IDS = list(env.ALLOWED_CHAT_IDS);
 
 export const OPENROUTER_API_KEY = env.OPENROUTER_API_KEY || "";
-export const AI_MODELS = list(env.AI_MODELS || env.AI_MODEL);
+
+// Free-only safety: legacy AI_MODEL is intentionally ignored so an old .env
+// cannot pin the bot to one rate-limited provider. Optional AI_MODELS values
+// are accepted only when they are explicitly free routes.
+export const AI_MODELS = list(env.AI_MODELS).filter(
+  (id) => id === "openrouter/free" || id.endsWith(":free")
+);
 export const AI_TIMEOUT_SECONDS = clampNumber(env.AI_TIMEOUT_SECONDS, 45, 10, 120);
 export const DAILY_AI_LIMIT = clampNumber(env.DAILY_AI_LIMIT, 120, 1, 100000);
 export const DIRECT_RESERVE = clampNumber(env.DIRECT_RESERVE, 20, 0, 100000);
 
-export const PAID_FALLBACK_MODEL = env.PAID_FALLBACK_MODEL || "openai/gpt-5-nano";
-export const MONTHLY_AI_BUDGET_USD = clampNumber(env.MONTHLY_AI_BUDGET_USD, 1, 0, 1000);
-export const PAID_INPUT_USD_PER_M = clampNumber(env.PAID_INPUT_USD_PER_M, 0.05, 0, 1000);
-export const PAID_OUTPUT_USD_PER_M = clampNumber(env.PAID_OUTPUT_USD_PER_M, 0.40, 0, 1000);
+// Hard-disabled paid features. These constants remain exported for backwards
+// compatibility with the runtime, but environment variables cannot enable them.
+export const PAID_FALLBACK_MODEL = "";
+export const MONTHLY_AI_BUDGET_USD = 0;
+export const PAID_INPUT_USD_PER_M = 0;
+export const PAID_OUTPUT_USD_PER_M = 0;
 
-export const WEB_SEARCH_ENABLED = bool(env.WEB_SEARCH_ENABLED, true);
-export const WEB_SEARCH_ENGINE = env.WEB_SEARCH_ENGINE || "parallel";
-export const WEB_SEARCH_ESTIMATED_COST_USD = clampNumber(env.WEB_SEARCH_ESTIMATED_COST_USD, 0.001, 0, 1);
+// OpenRouter web search can incur cost, so it is hard-disabled in free-only mode.
+export const WEB_SEARCH_ENABLED = false;
+export const WEB_SEARCH_ENGINE = "parallel";
+export const WEB_SEARCH_ESTIMATED_COST_USD = 0;
 
 export const DOCTOR_BIAS = clampNumber(env.DOCTOR_BIAS, 0.65, 0, 1);
 export const ROAST_LEVEL = Math.round(clampNumber(env.ROAST_LEVEL, 2, 1, 3));
