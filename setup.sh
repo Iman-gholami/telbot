@@ -9,7 +9,7 @@ if [[ "$(id -u)" -ne 0 ]]; then
   exit 1
 fi
 
-echo "🌸 Installing Narges Koochooloo (free-only mode)..."
+echo "🌸 Preparing Narges Koochooloo (FREE-ONLY / npm mode)..."
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
@@ -29,7 +29,7 @@ nvm alias default 22
 
 if [[ ! -f .env ]]; then
   cp .env.example .env
-  echo "❌ فایل .env وجود نداشت و ساخته شد. BOT_TOKEN و OPENROUTER_API_KEY و IDها را داخلش وارد کن و همین دستور را دوباره اجرا کن."
+  echo "❌ فایل .env ساخته شد. BOT_TOKEN و OPENROUTER_API_KEY و IDها را وارد کن و دوباره همین دستور را اجرا کن."
   exit 1
 fi
 
@@ -50,7 +50,7 @@ set_env() {
   fi
 }
 
-# Remove all legacy/potentially-paid routing settings.
+# Remove all legacy or potentially-paid settings.
 for key in \
   AI_MODEL \
   PAID_FALLBACK_MODEL \
@@ -65,11 +65,13 @@ for key in \
   remove_env "$key"
 done
 
-# Force the personality/behavior requested for this bot.
+# Requested final profile.
 set_env AI_MODELS ""
 set_env AI_TIMEOUT_SECONDS "45"
-set_env DAILY_AI_LIMIT "120"
-set_env DIRECT_RESERVE "20"
+# OpenRouter free accounts are currently capped at 50 free requests/day;
+# keep a little headroom for restarts/tests.
+set_env DAILY_AI_LIMIT "45"
+set_env DIRECT_RESERVE "12"
 set_env WEB_SEARCH_ENABLED "false"
 set_env DOCTOR_BIAS "0.65"
 set_env ROAST_LEVEL "2"
@@ -92,18 +94,18 @@ BOT_TOKEN_VALUE="$(read_env BOT_TOKEN)"
 OPENROUTER_KEY_VALUE="$(read_env OPENROUTER_API_KEY)"
 
 if [[ -z "$BOT_TOKEN_VALUE" || "$BOT_TOKEN_VALUE" == *"PASTE_"* ]]; then
-  echo "❌ BOT_TOKEN داخل .env خالی است. توکن واقعی تلگرام را وارد کن."
+  echo "❌ BOT_TOKEN داخل .env خالی است."
   exit 1
 fi
 if [[ -z "$OPENROUTER_KEY_VALUE" || "$OPENROUTER_KEY_VALUE" == "sk-or-v1-" || "$OPENROUTER_KEY_VALUE" == *"PASTE_"* ]]; then
-  echo "❌ OPENROUTER_API_KEY داخل .env کامل نیست. کلید واقعی OpenRouter را وارد کن."
+  echo "❌ OPENROUTER_API_KEY داخل .env کامل نیست."
   exit 1
 fi
 
 ENGINEER_ID_VALUE="$(read_env ENGINEER_ID)"
 DOCTOR_ID_VALUE="$(read_env DOCTOR_ID)"
 if [[ -z "$ENGINEER_ID_VALUE" || -z "$DOCTOR_ID_VALUE" ]]; then
-  echo "⚠️ ENGINEER_ID یا DOCTOR_ID خالی است؛ بات اجرا می‌شود ولی تشخیص مهندس/خانوم دکتر کامل نخواهد بود."
+  echo "⚠️ ENGINEER_ID یا DOCTOR_ID خالی است؛ بات اجرا می‌شود ولی تشخیص مهندس/خانوم دکتر کامل نیست."
 fi
 
 echo "📦 Installing Node dependencies..."
@@ -111,8 +113,7 @@ rm -rf node_modules
 npm install
 npm run check
 
-# Runtime settings are persisted in SQLite and can override .env. Reset them
-# to the requested final profile and keep all potentially-paid switches off.
+# Runtime settings stored in SQLite can override .env, so reset them too.
 node --input-type=module -e '
   const m = await import("./db.js");
   m.setSetting("doctor_bias", "0.65");
@@ -124,46 +125,25 @@ node --input-type=module -e '
   m.closeDb();
 '
 
-NODE_BIN="$(command -v node)"
+# This project is intentionally NOT managed by systemd anymore.
+# Stop/remove the old unit so it cannot cause Telegram 409 conflicts.
+if systemctl list-unit-files 2>/dev/null | grep -q '^telbot.service'; then
+  systemctl stop telbot.service 2>/dev/null || true
+  systemctl disable telbot.service 2>/dev/null || true
+fi
+rm -f /etc/systemd/system/telbot.service
+systemctl daemon-reload 2>/dev/null || true
+systemctl reset-failed 2>/dev/null || true
 
-# Stop an old manually-started copy, if one exists.
+# Stop stale copies of this exact bot only.
 pkill -f "$APP_DIR/src/index.js" 2>/dev/null || true
 pkill -f "$APP_DIR/index.js" 2>/dev/null || true
-
-cat > /etc/systemd/system/telbot.service <<EOF
-[Unit]
-Description=Narges Koochooloo Telegram Bot
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=root
-WorkingDirectory=$APP_DIR
-ExecStart=$NODE_BIN $APP_DIR/index.js
-Restart=always
-RestartSec=5
-KillSignal=SIGINT
-Environment=NODE_ENV=production
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-systemctl daemon-reload
-systemctl enable telbot.service >/dev/null
-systemctl restart telbot.service
-sleep 3
-
-if ! systemctl is-active --quiet telbot.service; then
-  echo "❌ سرویس بالا نیامد. آخرین لاگ‌ها:"
-  journalctl -u telbot.service -n 80 --no-pager
-  exit 1
-fi
+sleep 1
 
 echo
-echo "✅ نرگس V4 با حالت FREE-ONLY اجرا شد."
-echo "🤖 فقط مدل‌های رایگان OpenRouter مجازند؛ AI_MODEL قدیمی نادیده گرفته می‌شود."
-echo "💸 fallback پولی و Web Search پولی در کد قفل و غیرفعال‌اند."
-echo "📋 وضعیت سرویس: systemctl status telbot --no-pager"
-echo "📜 لاگ زنده: journalctl -u telbot -f"
+echo "✅ آماده شد: FREE-ONLY، بدون systemd، بدون fallback پولی، بدون Web Search پولی."
+echo "🧪 در startup یک درخواست واقعی رایگان زده می‌شود و مدل متصل‌شده چاپ می‌شود."
+echo "▶️ اجرای بات با npm run start ..."
+echo
+
+exec npm run start
