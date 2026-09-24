@@ -8,8 +8,8 @@ import {
 import { getUsage, incrementUsage, markExhausted } from "./db.js";
 
 const API = "https://openrouter.ai/api/v1";
-const PREFERRED = ["qwen", "deepseek", "nvidia", "minimax", "glm", "mistral", "llama", "gemma", "kimi"];
-const EXCLUDED = /(vision|-vl|image|embed|guard|safety|moderation|audio|tts|ocr|coder|math)/i;
+const PREFERRED = ["mistral", "llama", "gemma", "qwen", "deepseek", "minimax", "glm", "nvidia", "kimi"];
+const EXCLUDED = /(vision|-vl|image|embed|guard|safety|moderation|audio|tts|ocr|coder|math|reasoning|thinking|reasoner|r1)/i;
 const MAX_MODELS_PER_REQUEST = 3;
 
 export class QuotaError extends Error {}
@@ -33,7 +33,7 @@ function chunk(items, size) {
 }
 
 // Never trust an old AI_MODEL/AI_MODELS value blindly. Paid slugs are discarded.
-let freeModels = [...new Set(AI_MODELS.filter(isExplicitlyFree))];
+let freeModels = [...new Set(AI_MODELS.filter((id) => isExplicitlyFree(id) && !EXCLUDED.test(id)))];
 let initPromise = null;
 let globalCooldownUntil = 0;
 
@@ -92,7 +92,9 @@ function extractContent(data) {
 export function stripThinking(text) {
   return String(text || "")
     .replace(/<think>[\s\S]*?<\/think>/gi, "")
+    .replace(/<analysis>[\s\S]*?<\/analysis>/gi, "")
     .replace(/^[\s\S]*<\/think>/i, "")
+    .replace(/^[\s\S]*<\/analysis>/i, "")
     .trim();
 }
 
@@ -110,6 +112,7 @@ async function requestBatch(models, { messages, temperature, maxTokens }) {
       temperature,
       top_p: 0.92,
       max_tokens: maxTokens,
+      reasoning: { exclude: true },
       provider: { allow_fallbacks: true },
     }),
     signal: AbortSignal.timeout(AI_TIMEOUT_SECONDS * 1000),
@@ -190,7 +193,10 @@ async function requestOpenRouter({ messages, temperature, maxTokens, countUsage 
 async function probeFreeConnection() {
   try {
     const result = await requestOpenRouter({
-      messages: [{ role: "user", content: "Reply with exactly: OK" }],
+      messages: [
+        { role: "system", content: "Return only the final answer. No reasoning or explanation." },
+        { role: "user", content: "Reply with exactly: OK" },
+      ],
       temperature: 0,
       maxTokens: 12,
       countUsage: false,
