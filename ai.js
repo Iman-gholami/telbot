@@ -71,7 +71,7 @@ function parseStrictReply(raw) {
   if (!reply || looksLikeMetaLeak(reply)) return null;
   reply = reply.replace(/^(?:نرگس(?:\s*کوچولو)?|narges)\s*[:：]\s*/i, "").trim();
   if (!reply || looksLikeMetaLeak(reply)) return null;
-  return reply.slice(0, 2600);
+  return reply.slice(0, 2200);
 }
 
 function isSilence(text) {
@@ -86,21 +86,22 @@ function tinyAmbiguousReply(text) {
 }
 
 async function secondModelRetry({ targetText, direct, factual, excludeModel }) {
-  const prompt = `پیام کاربر: «${String(targetText || "").slice(0, 500)}»\nفقط خود جواب نهایی نرگس را بساز. پیام مبهم است معنی اختراع نکن.`;
   const result = await chatCompletion(
     [
       {
         role: "system",
-        content: `تو نرگس کوچولو هستی. ${factual ? "دقیق و بدون شوخی جواب بده." : "فارسی محاوره‌ای، طبیعی و کوتاه جواب بده."} فقط JSON بده: {"reply":"..."}. هیچ تحلیل یا توضیحی ممنوع.`,
+        content: `تو نرگس کوچولو هستی. ${factual ? "دقیق و بدون شوخی جواب بده." : "فارسی محاوره‌ای، طبیعی و کوتاه جواب بده."} فقط JSON بده: {"reply":"..."}.`,
       },
-      { role: "user", content: prompt },
+      { role: "user", content: `پیام: «${String(targetText || "").slice(0, 400)}»` },
     ],
     {
-      temperature: factual ? 0.2 : 0.55,
-      maxTokens: factual ? 420 : 100,
+      temperature: factual ? 0.2 : 0.5,
+      maxTokens: factual ? 320 : 80,
       kind: direct ? "direct" : "auto",
       jsonMode: true,
       excludeModels: excludeModel ? [excludeModel] : [],
+      maxRouteAttempts: 2,
+      attemptTimeoutMs: factual ? 12_000 : 6_000,
     }
   );
   return { ...result, reply: parseStrictReply(result.text) };
@@ -121,12 +122,14 @@ export async function generateReply(ctx, { direct, text, replyToSpeaker = null, 
   if (!OPENROUTER_API_KEY) return fallback();
   if (!canSpend(direct ? "direct" : "auto")) return fallback(budget().exhausted);
 
-  const summary = getChatState(chatId).summary;
+  const summary = String(getChatState(chatId).summary || "").slice(0, factual ? 900 : 650);
   const replyNote = replyToText
-    ? ` [در جواب ${replyToSpeaker || "کسی"}: «${replyToText.slice(0, 180)}»]`
+    ? ` [در جواب ${replyToSpeaker || "کسی"}: «${replyToText.slice(0, 140)}»]`
     : "";
+  const historyLimit = factual ? 10 : (direct ? 14 : 10);
+  const memoryLimit = factual ? 8 : 6;
 
-  const userPrompt = `<memory>\n${memoriesAsText({ limit: 12 })}\n</memory>\n\n<summary>\n${summary || "ندارد"}\n</summary>\n\n<recent_chat>\n${historyAsText(chatId) || "ندارد"}\n</recent_chat>\n\n<target>\n${speakerName}${replyNote}: ${text}\n</target>\n\nقواعد این نوبت:\n${turnRules({ direct, mood, roastLevel, side, banter, factual, speakerName })}\n\nفقط JSON نهایی را بده.`;
+  const userPrompt = `<memory>\n${memoriesAsText({ limit: memoryLimit })}\n</memory>\n<summary>\n${summary || "ندارد"}\n</summary>\n<recent_chat>\n${historyAsText(chatId, historyLimit) || "ندارد"}\n</recent_chat>\n<target>\n${speakerName}${replyNote}: ${String(text).slice(0, 900)}\n</target>\n${turnRules({ direct, mood, roastLevel, side, banter, factual, speakerName })}\nفقط JSON.`;
 
   try {
     const first = await chatCompletion(
@@ -135,10 +138,12 @@ export async function generateReply(ctx, { direct, text, replyToSpeaker = null, 
         { role: "user", content: userPrompt },
       ],
       {
-        temperature: factual ? 0.25 : 0.68,
-        maxTokens: factual ? 600 : 120,
+        temperature: factual ? 0.22 : 0.62,
+        maxTokens: factual ? 420 : 90,
         kind: direct ? "direct" : "auto",
         jsonMode: true,
+        maxRouteAttempts: factual ? 4 : 3,
+        attemptTimeoutMs: factual ? 14_000 : 7_000,
       }
     );
 
@@ -146,23 +151,20 @@ export async function generateReply(ctx, { direct, text, replyToSpeaker = null, 
     let chosen = first;
 
     if (!reply) {
-      console.warn(`⚠️ Invalid/meta reply blocked from ${first.model}; trying another free model.`);
+      console.warn(`⚠️ Invalid/meta reply blocked from ${first.model}; trying one compact retry.`);
       const second = await secondModelRetry({
         targetText: text,
         direct,
         factual,
-        excludeModel: first.model,
+        excludeModel: first.routeModel || first.model,
       });
       reply = second.reply;
       chosen = second;
     }
 
-    if (!reply) {
-      console.warn("⚠️ Second model also failed strict reply validation; using safe fallback.");
-      return fallback();
-    }
-
+    if (!reply) return fallback();
     if (isSilence(reply)) return direct ? fallback() : { reply: null, source: "silent" };
+
     return {
       reply,
       source: "ai",
