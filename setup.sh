@@ -111,6 +111,19 @@ rm -rf node_modules
 npm install
 npm run check
 
+# Runtime settings are persisted in SQLite and can override .env. Reset them
+# to the requested final profile and keep all potentially-paid switches off.
+node --input-type=module -e '
+  const m = await import("./db.js");
+  m.setSetting("doctor_bias", "0.65");
+  m.setSetting("auto_max_prob", "0.38");
+  m.setSetting("roast_level", "2");
+  m.setSetting("auto_debounce_seconds", "8");
+  m.setSetting("paid_fallback", "0");
+  m.setSetting("web_search", "0");
+  m.closeDb();
+'
+
 NODE_BIN="$(command -v node)"
 
 # Stop an old manually-started copy, if one exists.
