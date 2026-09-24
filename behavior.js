@@ -36,22 +36,27 @@ export function isBareCall(ctx, text) {
 
 const SERIOUS = /(ناراحت|غمگین|حالم بده|حالم خوب نیست|استرس|نگران|دعوا جدی|مشکل جدی|خسته شدم|گریه|افسرده|بیمارستان|تسلیت|فوت|درد شدید|اورژانس)/;
 const BANTER = /(😂|🤣|خخخ|ههه|کل.?کل|باز شروع|چی میگی|نه بابا|گیر دادی|برو بابا|زر نزن|اسکل|خل|دیوونه|مسخره|گوه|چرت|احمق|مغزت|عقل نداری)/;
-const FACTUAL = /(چطور|چجوری|چیست|چیه|کیه|کجاست|چند|قیمت|خبر|امروز|الان|آخرین|جدیدترین|آپدیت|نسخه|ارور|خطا|کد|برنامه نویسی|پزشکی|دارو|تاریخ|ساعت|هوا|سرچ|جستجو|لینک|منبع)/;
-const SOCIAL_QUESTION = /(چرا\s+(?:اینقد|انقد|باید\s+تو)|مغزت|عقل نداری|خوبی|چطوری|کجایی|دوستم داری|دوستش دارم|چی میگی|داری چیکار میکنی|داری چیکار می‌کنی)/;
+const FACTUAL = /(چرا|چطور|چجوری|چگونه|چیست|چیه|کیه|کجاست|چند|قیمت|خبر|امروز|الان|آخرین|جدیدترین|آپدیت|نسخه|ارور|خطا|کد|برنامه نویسی|پزشکی|دارو|تاریخ|ساعت|هوا|سرچ|جستجو|لینک|منبع|معنی|تعریف|فرق|تفاوت|علت|دلیل|توضیح|آیا|درسته که|واقعیه که|میشه توضیح|میتونی توضیح)/;
+const SOCIAL_QUESTION = /(چرا\s+(?:اینقد|انقد|اینقدر|انقدر|باید\s+تو)|مغزت|عقل نداری|خوبی|چطوری|کجایی|دوستم داری|دوستش دارم|چی میگی|داری چیکار میکنی|داری چیکار می‌کنی|منو دوست داری|دلت برام تنگ|خانوم دکتر.*دوست)/;
 
 export function isFactualIntent(text) {
   const n = normalizePersian(text);
   if (BANTER.test(n) || SOCIAL_QUESTION.test(n)) return false;
-  return FACTUAL.test(n);
+  if (FACTUAL.test(n)) return true;
+  // سؤال‌های کمی بلندتر که لحن کل‌کل ندارند معمولاً اطلاعاتی‌اند.
+  if (/[؟?]/.test(n) && n.length >= 22 && !/(دوست|عاشق|حوصله|خسته|گشنه|قهر|آشتی)/.test(n)) return true;
+  return false;
 }
 
 export function detectConversationMode(text, chatId) {
   const n = normalizePersian(text);
   const recent = recentHistory(chatId, 6).map((x) => normalizePersian(x.text));
+  const factual = isFactualIntent(n);
+
   if (SERIOUS.test(n) || recent.slice(-3).some((x) => SERIOUS.test(x))) {
-    return { mood: "calm", roastLevel: 1, banter: false, factual: false };
+    return { mood: "calm", roastLevel: 1, banter: false, factual };
   }
-  if (isFactualIntent(n)) return { mood: "smart", roastLevel: 1, banter: false, factual: true };
+  if (factual) return { mood: "smart", roastLevel: 1, banter: false, factual: true };
 
   const activeBanter = BANTER.test(n) || recent.some((x) => BANTER.test(x));
   const mainActive = recentHistory(chatId, 6).filter((x) => ["مهندس", "خانوم دکتر"].includes(x.speaker)).length >= 3;
