@@ -22,7 +22,7 @@ export function normalizeMemory(text = "") {
     .replace(/[^\p{L}\p{N}\s]/gu, " ")
     .replace(/\s+/g, " ")
     .trim()
-    .slice(0, 260);
+    .slice(0, 300);
 }
 
 export function roleFromUser(user) {
@@ -35,7 +35,7 @@ export function roleFromUser(user) {
 export function roleLabel(role) {
   if (role === "doctor") return "خانوم دکتر";
   if (role === "engineer") return "مهندس";
-  return "گروه";
+  return "یکی از بچه‌ها";
 }
 
 export function displayName(user) {
@@ -59,7 +59,6 @@ export function saveLongTermMemory(subject, content, options = {}) {
   return saveDbMemory(subject, clean, normalizeMemory(clean), options);
 }
 
-// \b در جاوااسکریپت با حروف فارسی کار نمی‌کند؛ مرز کلمه را دستی چک می‌کنیم
 const DOCTOR_RE = /خانوم دکتر|خانم دکتر|(?:^|[^\p{L}])دکتر/u;
 const ENGINEER_RE = /مهندس/u;
 
@@ -68,17 +67,18 @@ export function inferMemorySubjects(text, speakerRole) {
   const subjects = [];
   if (DOCTOR_RE.test(n)) subjects.push("doctor");
   if (ENGINEER_RE.test(n)) subjects.push("engineer");
-  if (!subjects.length) subjects.push(speakerRole || "group");
+  if (!subjects.length && speakerRole) subjects.push(speakerRole);
   return [...new Set(subjects)];
 }
 
-const MANUAL_TRIGGER =
-  /یادت[\s\u200c]*(?:باشه|بمونه|بماند|نره)(?:[\s\u200c]+که)?[\s\u200c:،,]+([\s\S]+)/u;
+const MANUAL_TRIGGER = /یادت[\s\u200c]*(?:باشه|بمونه|بماند|نره)(?:[\s\u200c]+که)?[\s\u200c:،,]+([\s\S]+)/u;
 
 export function extractManualMemory(text, speakerRole) {
   const fixed = String(text).replace(/[يى]/g, "ی").replace(/ك/g, "ک");
   const match = fixed.match(MANUAL_TRIGGER);
   const content = match?.[1]?.trim();
   if (!content || content.length < 4) return null;
-  return { content, subjects: inferMemorySubjects(content, speakerRole) };
+  const subjects = inferMemorySubjects(content, speakerRole);
+  if (!subjects.length) return null;
+  return { content, subjects };
 }

@@ -7,13 +7,11 @@ fs.mkdirSync(DATA_DIR, { recursive: true });
 
 export const DB_PATH = path.join(DATA_DIR, "narges.sqlite");
 export const BOT_SPEAKER = "نرگس کوچولو";
-export const MEMORY_SUBJECTS = ["engineer", "doctor", "group"];
+export const MEMORY_SUBJECTS = ["engineer", "doctor"];
 
 const db = new Database(DB_PATH);
 db.pragma("journal_mode = WAL");
 db.pragma("synchronous = NORMAL");
-
-// ---------- Schema & migrations ----------
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS messages (
@@ -38,6 +36,20 @@ db.exec(`
     count INTEGER NOT NULL DEFAULT 0,
     exhausted INTEGER NOT NULL DEFAULT 0
   );
+
+  CREATE TABLE IF NOT EXISTS ai_spend (
+    month TEXT PRIMARY KEY,
+    usd REAL NOT NULL DEFAULT 0,
+    paid_requests INTEGER NOT NULL DEFAULT 0,
+    web_requests INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL DEFAULT 0
+  );
+
+  CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
 `);
 
 function ensureColumn(table, column, type) {
@@ -51,7 +63,7 @@ ensureColumn("messages", "reply_to_text", "TEXT");
 const CREATE_MEMORIES = `
   CREATE TABLE memories (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    subject TEXT NOT NULL CHECK(subject IN ('engineer', 'doctor', 'group')),
+    subject TEXT NOT NULL CHECK(subject IN ('engineer', 'doctor')),
     content TEXT NOT NULL,
     normalized TEXT NOT NULL,
     importance INTEGER NOT NULL DEFAULT 2,
@@ -61,20 +73,17 @@ const CREATE_MEMORIES = `
     UNIQUE(subject, normalized)
   )`;
 
-const memoriesSql = db
-  .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'memories'")
-  .get()?.sql;
-
+const memoriesSql = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='memories'").get()?.sql;
 if (!memoriesSql) {
   db.exec(CREATE_MEMORIES);
-} else if (!memoriesSql.includes("'group'")) {
-  // نسخه قبلی فقط engineer/doctor را قبول می‌کرد
+} else if (memoriesSql.includes("'group'")) {
   db.transaction(() => {
     db.exec("ALTER TABLE memories RENAME TO memories_old");
     db.exec(CREATE_MEMORIES);
     db.exec(`
-      INSERT INTO memories (id, subject, content, normalized, importance, source, created_at, updated_at)
-      SELECT id, subject, content, normalized, importance, source, created_at, updated_at FROM memories_old
+      INSERT OR IGNORE INTO memories (id, subject, content, normalized, importance, source, created_at, updated_at)
+      SELECT id, subject, content, normalized, importance, source, created_at, updated_at
+      FROM memories_old WHERE subject IN ('engineer', 'doctor')
     `);
     db.exec("DROP TABLE memories_old");
   })();
@@ -82,61 +91,34 @@ if (!memoriesSql) {
 db.exec(`CREATE INDEX IF NOT EXISTS idx_memories_subject_updated
   ON memories(subject, importance DESC, updated_at DESC)`);
 
-// ---------- Messages ----------
-
 const insertMessage = db.prepare(`
   INSERT INTO messages (chat_id, message_id, speaker, user_id, text, reply_to_speaker, reply_to_text, created_at)
   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 `);
-
 const getHistory = db.prepare(`
   SELECT id, speaker, user_id, text, reply_to_speaker, reply_to_text, created_at
   FROM messages WHERE chat_id = ? ORDER BY id DESC LIMIT ?
 `);
-
 const getAfter = db.prepare(`
   SELECT id, speaker, user_id, text, reply_to_speaker, reply_to_text, created_at
   FROM messages WHERE chat_id = ? AND id > ? ORDER BY id ASC LIMIT ?
 `);
-
 const countAfter = db.prepare(`SELECT COUNT(*) AS n FROM messages WHERE chat_id = ? AND id > ?`);
-
 const pruneHistory = db.prepare(`
-  DELETE FROM messages
-  WHERE chat_id = ? AND id NOT IN (
+  DELETE FROM messages WHERE chat_id = ? AND id NOT IN (
     SELECT id FROM messages WHERE chat_id = ? ORDER BY id DESC LIMIT ?
   )
 `);
-
-const getLastBotAt = db.prepare(`
-  SELECT created_at FROM messages WHERE chat_id = ? AND speaker = ? ORDER BY id DESC LIMIT 1
-`);
-
+const getLastBotAt = db.prepare(`SELECT created_at FROM messages WHERE chat_id=? AND speaker=? ORDER BY id DESC LIMIT 1`);
 let insertsSincePrune = 0;
 
-export function rememberMessage({
-  chatId,
-  messageId = null,
-  speaker,
-  userId = null,
-  text,
-  replyToSpeaker = null,
-  replyToText = null,
-}) {
-  const clean = String(text || "").trim().slice(0, 2500);
+export function rememberMessage({ chatId, messageId = null, speaker, userId = null, text, replyToSpeaker = null, replyToText = null }) {
+  const clean = String(text || "").trim().slice(0, 3000);
   if (!clean) return null;
-
   const info = insertMessage.run(
-    String(chatId),
-    messageId,
-    speaker,
-    userId ? String(userId) : null,
-    clean,
-    replyToSpeaker,
-    replyToText ? String(replyToText).slice(0, 300) : null,
-    Date.now()
+    String(chatId), messageId, speaker, userId ? String(userId) : null, clean,
+    replyToSpeaker, replyToText ? String(replyToText).slice(0, 350) : null, Date.now()
   );
-
   if (++insertsSincePrune >= 20) {
     insertsSincePrune = 0;
     pruneHistory.run(String(chatId), String(chatId), DB_HISTORY_LIMIT);
@@ -147,15 +129,12 @@ export function rememberMessage({
 export function recentHistory(chatId, limit = HISTORY_SIZE) {
   return getHistory.all(String(chatId), limit).reverse();
 }
-
 export function messagesAfter(chatId, rowId, limit = 150) {
   return getAfter.all(String(chatId), rowId, limit);
 }
-
 export function countMessagesAfter(chatId, rowId) {
-  return countAfter.get(String(chatId), rowId).n;
+  return Number(countAfter.get(String(chatId), rowId)?.n || 0);
 }
-
 export function lastBotAt(chatId) {
   return getLastBotAt.get(String(chatId), BOT_SPEAKER)?.created_at || 0;
 }
@@ -167,22 +146,17 @@ function humanGap(ms) {
   if (h < 36) return `${h} ساعت`;
   return `${Math.round(h / 24)} روز`;
 }
-
 function short(text, max) {
   const s = String(text || "").replace(/\s+/g, " ").trim();
   return s.length > max ? `${s.slice(0, max)}…` : s;
 }
-
 const GAP_MS = 45 * 60 * 1000;
 
-// تاریخچه را طوری می‌نویسد که مدل ریپلای‌ها و وقفه‌های زمانی را ببیند
 export function formatMessages(rows, { selfLabel = "نرگس (خودت)" } = {}) {
   const lines = [];
   let prev = null;
   for (const r of rows) {
-    if (prev && r.created_at - prev > GAP_MS) {
-      lines.push(`--- ${humanGap(r.created_at - prev)} بعد ---`);
-    }
+    if (prev && r.created_at - prev > GAP_MS) lines.push(`--- ${humanGap(r.created_at - prev)} بعد ---`);
     prev = r.created_at;
     const who = r.speaker === BOT_SPEAKER ? selfLabel : r.speaker;
     const replyTo = r.reply_to_text
@@ -192,117 +166,104 @@ export function formatMessages(rows, { selfLabel = "نرگس (خودت)" } = {})
   }
   return lines.join("\n");
 }
-
 export function historyAsText(chatId, limit = HISTORY_SIZE) {
   return formatMessages(recentHistory(chatId, limit));
 }
 
-// ---------- Chat state (rolling summary) ----------
-
-const getState = db.prepare(`SELECT summary, digested_until, updated_at FROM chat_state WHERE chat_id = ?`);
+const getState = db.prepare(`SELECT summary, digested_until, updated_at FROM chat_state WHERE chat_id=?`);
 const upsertState = db.prepare(`
   INSERT INTO chat_state (chat_id, summary, digested_until, updated_at) VALUES (?, ?, ?, ?)
-  ON CONFLICT(chat_id) DO UPDATE SET
-    summary = excluded.summary,
-    digested_until = excluded.digested_until,
-    updated_at = excluded.updated_at
+  ON CONFLICT(chat_id) DO UPDATE SET summary=excluded.summary, digested_until=excluded.digested_until, updated_at=excluded.updated_at
 `);
-
 export function getChatState(chatId) {
   return getState.get(String(chatId)) || { summary: "", digested_until: 0, updated_at: 0 };
 }
-
 export function setChatState(chatId, { summary, digestedUntil }) {
-  upsertState.run(String(chatId), summary || "", digestedUntil, Date.now());
+  upsertState.run(String(chatId), summary || "", Number(digestedUntil) || 0, Date.now());
 }
 
-// ---------- AI usage budget ----------
-
-const getUsageStmt = db.prepare(`SELECT count, exhausted FROM ai_usage WHERE day = ?`);
+const getUsageStmt = db.prepare(`SELECT count, exhausted FROM ai_usage WHERE day=?`);
 const incUsageStmt = db.prepare(`
-  INSERT INTO ai_usage (day, count, exhausted) VALUES (?, 1, 0)
-  ON CONFLICT(day) DO UPDATE SET count = count + 1
+  INSERT INTO ai_usage (day, count, exhausted) VALUES (?,1,0)
+  ON CONFLICT(day) DO UPDATE SET count=count+1
 `);
 const exhaustStmt = db.prepare(`
-  INSERT INTO ai_usage (day, count, exhausted) VALUES (?, 0, 1)
-  ON CONFLICT(day) DO UPDATE SET exhausted = 1
+  INSERT INTO ai_usage (day, count, exhausted) VALUES (?,0,1)
+  ON CONFLICT(day) DO UPDATE SET exhausted=1
 `);
+export function getUsage(day) { return getUsageStmt.get(day) || { count: 0, exhausted: 0 }; }
+export function incrementUsage(day) { incUsageStmt.run(day); }
+export function markExhausted(day) { exhaustStmt.run(day); }
 
-export function getUsage(day) {
-  return getUsageStmt.get(day) || { count: 0, exhausted: 0 };
+const getSpendStmt = db.prepare(`SELECT usd, paid_requests, web_requests FROM ai_spend WHERE month=?`);
+const addSpendStmt = db.prepare(`
+  INSERT INTO ai_spend (month, usd, paid_requests, web_requests, updated_at) VALUES (?, ?, ?, ?, ?)
+  ON CONFLICT(month) DO UPDATE SET
+    usd = usd + excluded.usd,
+    paid_requests = paid_requests + excluded.paid_requests,
+    web_requests = web_requests + excluded.web_requests,
+    updated_at = excluded.updated_at
+`);
+export function getMonthlySpend(month) {
+  return getSpendStmt.get(month) || { usd: 0, paid_requests: 0, web_requests: 0 };
 }
-export function incrementUsage(day) {
-  incUsageStmt.run(day);
-}
-export function markExhausted(day) {
-  exhaustStmt.run(day);
+export function addMonthlySpend(month, usd, { paid = false, web = false } = {}) {
+  const amount = Math.max(0, Number(usd) || 0);
+  addSpendStmt.run(month, amount, paid ? 1 : 0, web ? 1 : 0, Date.now());
 }
 
-// ---------- Long-term memory ----------
+const getSettingStmt = db.prepare(`SELECT value FROM settings WHERE key=?`);
+const setSettingStmt = db.prepare(`
+  INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)
+  ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
+`);
+export function getSetting(key, fallback = null) {
+  const row = getSettingStmt.get(String(key));
+  return row ? row.value : fallback;
+}
+export function setSetting(key, value) {
+  setSettingStmt.run(String(key), String(value), Date.now());
+}
 
 const upsertMemory = db.prepare(`
   INSERT INTO memories (subject, content, normalized, importance, source, created_at, updated_at)
   VALUES (?, ?, ?, ?, ?, ?, ?)
   ON CONFLICT(subject, normalized) DO UPDATE SET
-    content = excluded.content,
-    importance = MAX(memories.importance, excluded.importance),
-    source = CASE WHEN memories.source LIKE 'manual%' THEN memories.source ELSE excluded.source END,
-    updated_at = excluded.updated_at
+    content=excluded.content,
+    importance=MAX(memories.importance, excluded.importance),
+    source=CASE WHEN memories.source LIKE 'manual%' THEN memories.source ELSE excluded.source END,
+    updated_at=excluded.updated_at
 `);
-
 const getMemories = db.prepare(`
-  SELECT id, subject, content, importance, source, updated_at
-  FROM memories WHERE subject = ? ORDER BY importance DESC, updated_at DESC LIMIT ?
+  SELECT id, subject, content, importance, source, updated_at FROM memories
+  WHERE subject=? ORDER BY importance DESC, updated_at DESC LIMIT ?
 `);
-
-const deleteMemoryLike = db.prepare(`
-  DELETE FROM memories WHERE subject = ? AND normalized LIKE ? ESCAPE '\\'
-`);
-
-const updateAutoMemory = db.prepare(`
-  UPDATE memories SET content = ?, normalized = ?, updated_at = ?
-  WHERE id = ? AND source NOT LIKE 'manual%'
-`);
-
-const deleteAutoMemory = db.prepare(`
-  DELETE FROM memories WHERE id = ? AND source NOT LIKE 'manual%'
-`);
+const deleteMemoryLike = db.prepare(`DELETE FROM memories WHERE subject=? AND normalized LIKE ? ESCAPE '\\'`);
+const updateAutoMemory = db.prepare(`UPDATE memories SET content=?, normalized=?, updated_at=? WHERE id=? AND source NOT LIKE 'manual%'`);
+const deleteAutoMemory = db.prepare(`DELETE FROM memories WHERE id=? AND source NOT LIKE 'manual%'`);
 
 export function saveLongTermMemory(subject, content, normalized, { importance = 2, source = "auto" } = {}) {
   if (!MEMORY_SUBJECTS.includes(subject)) return false;
-  const clean = String(content || "").trim().replace(/\s+/g, " ").slice(0, 320);
+  const clean = String(content || "").trim().replace(/\s+/g, " ").slice(0, 360);
   if (clean.length < 4 || String(normalized || "").length < 4) return false;
-
   const now = Date.now();
   upsertMemory.run(subject, clean, normalized, Math.max(1, Math.min(3, Number(importance) || 2)), source, now, now);
   return true;
 }
-
 export function updateMemory(id, content, normalized) {
-  try {
-    return updateAutoMemory.run(String(content).slice(0, 320), normalized, Date.now(), id).changes > 0;
-  } catch {
-    return false; // مثلاً تکراری شدن با حافظه دیگر
-  }
+  try { return updateAutoMemory.run(String(content).slice(0, 360), normalized, Date.now(), id).changes > 0; }
+  catch { return false; }
 }
-
-export function deleteMemory(id) {
-  return deleteAutoMemory.run(id).changes > 0;
-}
-
-export function getLongTermMemories(subject, limit = 12) {
-  return getMemories.all(subject, limit);
-}
-
+export function deleteMemory(id) { return deleteAutoMemory.run(id).changes > 0; }
+export function getLongTermMemories(subject, limit = 12) { return getMemories.all(subject, limit); }
 export function deleteLongTermMemoryLike(subject, normalizedNeedle) {
   const needle = String(normalizedNeedle || "").trim();
-  if (needle.length < 3) return 0; // جلوگیری از پاک شدن کل حافظه
+  if (needle.length < 3) return 0;
   const escaped = needle.replace(/[\\%_]/g, "\\$&");
   return deleteMemoryLike.run(subject, `%${escaped}%`).changes;
 }
 
-const SUBJECT_LABELS = { engineer: "مهندس", doctor: "خانوم دکتر", group: "کل گروه و شوخی‌های داخلی" };
-
+const SUBJECT_LABELS = { engineer: "مهندس", doctor: "خانوم دکتر" };
 export function memoriesAsText({ withIds = false, limit = 12 } = {}) {
   return MEMORY_SUBJECTS.map((subject) => {
     const rows = getLongTermMemories(subject, limit);
@@ -312,6 +273,11 @@ export function memoriesAsText({ withIds = false, limit = 12 } = {}) {
   }).join("\n\n");
 }
 
-export function closeDb() {
-  db.close();
+export function dbStats() {
+  const messages = Number(db.prepare(`SELECT COUNT(*) AS n FROM messages`).get().n || 0);
+  const memories = Number(db.prepare(`SELECT COUNT(*) AS n FROM memories`).get().n || 0);
+  const chats = Number(db.prepare(`SELECT COUNT(DISTINCT chat_id) AS n FROM messages`).get().n || 0);
+  return { messages, memories, chats };
 }
+
+export function closeDb() { db.close(); }

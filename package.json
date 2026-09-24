@@ -1,14 +1,14 @@
 {
   "name": "narges-koochooloo-telegram-bot",
-  "version": "3.0.0",
+  "version": "4.0.0",
   "private": true,
-  "description": "ربات تلگرام فارسی نرگس کوچولو با درک بهتر گفتگو، خلاصه‌سازی بحث‌ها و حافظه بلندمدت",
+  "description": "ربات تلگرام فارسی نرگس کوچولو با حافظه هوشمند، ورود طبیعی به گفتگو، سرچ وب و fallback چندمدلی",
   "type": "module",
-  "main": "src/index.js",
+  "main": "index.js",
   "scripts": {
-    "start": "node src/index.js",
-    "dev": "node --watch src/index.js",
-    "check": "node --check src/config.js && node --check src/db.js && node --check src/memory.js && node --check src/behavior.js && node --check src/openrouter.js && node --check src/ai.js && node --check src/digest.js && node --check src/index.js"
+    "start": "node index.js",
+    "dev": "node --watch index.js",
+    "check": "node --check config.js && node --check db.js && node --check memory.js && node --check behavior.js && node --check openrouter.js && node --check ai.js && node --check digest.js && node --check index.js"
   },
   "engines": {
     "node": ">=20"
