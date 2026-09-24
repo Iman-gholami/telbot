@@ -1,6 +1,5 @@
 import {
   OPENROUTER_API_KEY,
-  AI_MODELS,
   AI_TIMEOUT_SECONDS,
   DAILY_AI_LIMIT,
   DIRECT_RESERVE,
@@ -8,27 +7,12 @@ import {
 import { getUsage, incrementUsage, markExhausted } from "./db.js";
 
 const API = "https://openrouter.ai/api/v1";
-const PREFERRED = ["mistral", "gemma", "llama", "qwen", "deepseek", "minimax", "glm", "nvidia", "kimi"];
-const EXCLUDED = /(vision|-vl|image|embed|guard|safety|moderation|audio|tts|ocr|coder|math|reasoning|thinking|reasoner|r1)/i;
-const DEFAULT_COOLDOWN_MS = 90_000;
-const BAD_OUTPUT_COOLDOWN_MS = 10 * 60_000;
+const ROUTER_MODEL = "openrouter/free";
 
 export class QuotaError extends Error {}
-class RetryableRouteError extends Error {
-  constructor(message, cooldownMs = DEFAULT_COOLDOWN_MS) {
-    super(message);
-    this.cooldownMs = cooldownMs;
-  }
-}
 
-let freeModels = [...new Set(
-  AI_MODELS.filter((id) => (id === "openrouter/free" || id.endsWith(":free")) && !EXCLUDED.test(id))
-)];
-let initPromise = null;
+let initialized = false;
 let globalCooldownUntil = 0;
-let preferredModel = null;
-const modelCooldownUntil = new Map();
-
 const metrics = {
   requests: 0,
   successes: 0,
@@ -40,53 +24,11 @@ const metrics = {
   lastError: null,
   startupProbe: false,
   routeAttempts: 0,
+  preferredModel: ROUTER_MODEL,
 };
-
-function familyScore(id) {
-  const i = PREFERRED.findIndex((p) => id.toLowerCase().includes(p));
-  return i === -1 ? PREFERRED.length : i;
-}
-
-function speedScore(id) {
-  const name = String(id).toLowerCase();
-  let score = familyScore(name) * 10;
-  if (/(flash|nano|mini|small|light|lightning|turbo|fast)/i.test(name)) score -= 45;
-  const match = name.match(/(?:^|[-_/])(\d+(?:\.\d+)?)b(?:[-_/]|$)/i);
-  if (match) {
-    const b = Number(match[1]);
-    if (b <= 12) score -= 30;
-    else if (b <= 32) score -= 15;
-    else if (b >= 100) score += 35;
-    else if (b >= 70) score += 20;
-  }
-  return score;
-}
 
 function utcDay() {
   return new Date().toISOString().slice(0, 10);
-}
-
-async function discoverFreeModels() {
-  const res = await fetch(`${API}/models`, { signal: AbortSignal.timeout(10_000) });
-  if (!res.ok) throw new Error(`OpenRouter models list returned ${res.status}`);
-  const data = await res.json();
-
-  return (data?.data || [])
-    .filter((m) => {
-      const id = String(m.id || "");
-      const promptPrice = Number(m.pricing?.prompt);
-      const completionPrice = Number(m.pricing?.completion);
-      const free = id.endsWith(":free") || (promptPrice === 0 && completionPrice === 0);
-      const outputs = m.architecture?.output_modalities;
-      const textOut = !Array.isArray(outputs) || outputs.includes("text");
-      const params = Array.isArray(m.supported_parameters) ? m.supported_parameters : [];
-      const structured = params.includes("response_format");
-      return free && textOut && structured && !EXCLUDED.test(id) &&
-        (m.context_length || 0) >= 16000 && id !== "openrouter/free";
-    })
-    .sort((a, b) => speedScore(a.id) - speedScore(b.id) || (b.context_length || 0) - (a.context_length || 0))
-    .slice(0, 6)
-    .map((m) => m.id);
 }
 
 function extractContent(data) {
@@ -107,205 +49,27 @@ export function stripThinking(text) {
     .trim();
 }
 
-function parseJsonObject(text) {
+function isJsonObject(text) {
   try {
     const parsed = JSON.parse(String(text || "").trim());
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
+    return Boolean(parsed && typeof parsed === "object" && !Array.isArray(parsed));
   } catch {
-    return null;
+    return false;
   }
 }
 
-async function requestModel(model, { messages, temperature, maxTokens, jsonMode, attemptTimeoutMs }) {
-  metrics.routeAttempts++;
-
-  const body = {
-    model,
-    messages,
-    temperature,
-    top_p: 0.92,
-    max_tokens: maxTokens,
-    reasoning: { exclude: true },
-    provider: {
-      allow_fallbacks: true,
-      require_parameters: Boolean(jsonMode),
-      sort: "latency",
-    },
-  };
-  if (jsonMode) body.response_format = { type: "json_object" };
-
-  let res;
-  try {
-    res = await fetch(`${API}/chat/completions`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${OPENROUTER_API_KEY}`,
-        "Content-Type": "application/json",
-        "X-Title": "Narges Koochooloo Telegram Bot",
-      },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(attemptTimeoutMs),
-    });
-  } catch (error) {
-    throw new RetryableRouteError(`${model}: ${error.message}`);
+export async function initModels() {
+  if (!OPENROUTER_API_KEY) throw new Error("OPENROUTER_API_KEY is missing");
+  if (!initialized) {
+    initialized = true;
+    console.log("🤖 Free AI route: openrouter/free");
+    console.log("⚡ One OpenRouter request per AI reply; OpenRouter chooses a compatible free model internally.");
   }
-
-  if (res.status === 401 || res.status === 403) {
-    const text = (await res.text()).slice(0, 500);
-    throw new Error(`OpenRouter API key rejected (${res.status}): ${text}`);
-  }
-
-  if (res.status === 402) {
-    const text = (await res.text()).slice(0, 700);
-    markExhausted(utcDay());
-    throw new QuotaError(`OpenRouter free allowance unavailable: ${text}`);
-  }
-
-  if (res.status === 429) {
-    metrics.rateLimits++;
-    const text = (await res.text()).slice(0, 500);
-    throw new RetryableRouteError(`${model} -> 429: ${text}`, 3 * 60_000);
-  }
-
-  if (!res.ok) {
-    metrics.providerErrors++;
-    const text = (await res.text()).slice(0, 500);
-    if ([400, 404, 408, 422, 500, 502, 503, 504].includes(res.status)) {
-      throw new RetryableRouteError(`${model} -> ${res.status}: ${text}`);
-    }
-    throw new Error(`OpenRouter ${res.status}: ${text}`);
-  }
-
-  const data = await res.json();
-  if (data?.error) throw new RetryableRouteError(`${model}: ${JSON.stringify(data.error).slice(0, 450)}`);
-
-  const text = stripThinking(extractContent(data));
-  if (!text) throw new RetryableRouteError(`${model}: empty response`);
-
-  if (jsonMode && !parseJsonObject(text)) {
-    throw new RetryableRouteError(`${model}: non-JSON output rejected`, BAD_OUTPUT_COOLDOWN_MS);
-  }
-
-  return {
-    text,
-    model: String(data.model || model),
-    routeModel: model,
-    usedPaid: false,
-    usedWeb: false,
-  };
-}
-
-function orderedCandidates(excludeModels = []) {
-  const excluded = new Set(excludeModels.map(String));
-  const now = Date.now();
-  const available = freeModels.filter((m) => !excluded.has(m) && (modelCooldownUntil.get(m) || 0) <= now);
-  const cooled = freeModels.filter((m) => !excluded.has(m) && (modelCooldownUntil.get(m) || 0) > now);
-  const list = available.length ? available : cooled;
-
-  if (preferredModel && list.includes(preferredModel)) {
-    return [preferredModel, ...list.filter((m) => m !== preferredModel)];
-  }
-  return list;
-}
-
-function canAttemptRoute(kind) {
-  const b = budget();
-  if (kind === "direct") return b.remaining > 0;
-  return b.remaining > DIRECT_RESERVE;
-}
-
-async function requestOpenRouter({
-  messages,
-  temperature,
-  maxTokens,
-  countUsage = true,
-  jsonMode = true,
-  excludeModels = [],
-  maxRouteAttempts,
-  attemptTimeoutMs,
-  kind = "direct",
-}) {
-  if (!freeModels.length) throw new Error("No free OpenRouter models are available");
-
-  const social = maxTokens <= 180;
-  const attempts = Math.max(1, Number(maxRouteAttempts) || (social ? 2 : 3));
-  const timeoutMs = Math.max(
-    2500,
-    Math.min(
-      AI_TIMEOUT_SECONDS * 1000,
-      Number(attemptTimeoutMs) || (social ? 6000 : 12000)
-    )
-  );
-
-  const candidates = orderedCandidates(excludeModels).slice(0, attempts);
-  let lastRetryable = null;
-
-  for (const model of candidates) {
-    if (countUsage) {
-      if (!canAttemptRoute(kind)) {
-        throw new QuotaError(kind === "direct" ? "daily free-request budget reached" : "direct-message reserve reached");
-      }
-      incrementUsage(utcDay());
-      metrics.requests++;
-    }
-
-    try {
-      const result = await requestModel(model, {
-        messages,
-        temperature,
-        maxTokens,
-        jsonMode,
-        attemptTimeoutMs: timeoutMs,
-      });
-      if (countUsage) metrics.successes++;
-      preferredModel = result.routeModel;
-      modelCooldownUntil.delete(result.routeModel);
-      metrics.lastModel = result.model;
-      metrics.lastError = null;
-      return result;
-    } catch (error) {
-      if (error instanceof RetryableRouteError) {
-        lastRetryable = error;
-        metrics.lastError = error.message;
-        modelCooldownUntil.set(model, Date.now() + (error.cooldownMs || DEFAULT_COOLDOWN_MS));
-        console.warn(`↪️ Free route skipped: ${error.message}`);
-        continue;
-      }
-      metrics.lastError = error.message;
-      throw error;
-    }
-  }
-
-  globalCooldownUntil = Date.now() + 15_000;
-  throw new QuotaError(`Free routes failed: ${lastRetryable?.message || "no compatible route"}`);
-}
-
-export function initModels() {
-  if (initPromise) return initPromise;
-  initPromise = (async () => {
-    if (!OPENROUTER_API_KEY) throw new Error("OPENROUTER_API_KEY is missing");
-
-    if (!freeModels.length) {
-      try {
-        freeModels = await discoverFreeModels();
-      } catch (error) {
-        console.warn(`⚠️ Free model discovery failed: ${error.message}`);
-        freeModels = [];
-      }
-    }
-
-    if (!freeModels.includes("openrouter/free")) freeModels.push("openrouter/free");
-    if (!freeModels.length) throw new Error("No free OpenRouter model found");
-
-    console.log(`🤖 Fast free routes: ${freeModels.join(" → ")}`);
-    console.log("⚡ No startup AI probe; first real message picks a sticky low-latency route.");
-    return currentModels();
-  })();
-  return initPromise;
+  return currentModels();
 }
 
 export function currentModels() {
-  return [...freeModels];
+  return [ROUTER_MODEL];
 }
 
 export function budget() {
@@ -326,14 +90,15 @@ export function monthlyBudget() {
 }
 
 export function canSpend(kind = "direct") {
-  const { remaining } = budget();
+  const { remaining, exhausted } = budget();
+  if (exhausted) return false;
   return kind === "direct" ? remaining > 0 : remaining > DIRECT_RESERVE;
 }
 
 export function aiMetrics() {
   return {
     ...metrics,
-    preferredModel,
+    preferredModel: ROUTER_MODEL,
     cooldownSeconds: Math.max(0, Math.ceil((globalCooldownUntil - Date.now()) / 1000)),
   };
 }
@@ -345,26 +110,111 @@ export async function chatCompletion(
     maxTokens = 400,
     kind = "direct",
     jsonMode = true,
-    excludeModels = [],
-    maxRouteAttempts,
     attemptTimeoutMs,
   } = {}
 ) {
   await initModels();
   if (!canSpend(kind)) throw new QuotaError("daily free-request budget reached");
   if (Date.now() < globalCooldownUntil && kind !== "direct") {
-    throw new QuotaError("AI cooling down after a free-tier rate limit");
+    throw new QuotaError("free router cooling down");
   }
 
-  return requestOpenRouter({
+  incrementUsage(utcDay());
+  metrics.requests++;
+  metrics.routeAttempts++;
+
+  const social = maxTokens <= 180;
+  const timeoutMs = Math.max(
+    4000,
+    Math.min(
+      AI_TIMEOUT_SECONDS * 1000,
+      Number(attemptTimeoutMs) || (social ? 9000 : 16000)
+    )
+  );
+
+  const body = {
+    model: ROUTER_MODEL,
     messages,
     temperature,
-    maxTokens,
-    countUsage: true,
-    jsonMode,
-    excludeModels,
-    maxRouteAttempts,
-    attemptTimeoutMs,
-    kind,
-  });
+    top_p: 0.92,
+    max_tokens: maxTokens,
+  };
+  if (jsonMode) body.response_format = { type: "json_object" };
+
+  let res;
+  try {
+    res = await fetch(`${API}/chat/completions`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${OPENROUTER_API_KEY}`,
+        "Content-Type": "application/json",
+        "X-Title": "Narges Koochooloo Telegram Bot",
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch (error) {
+    metrics.providerErrors++;
+    metrics.lastError = error.message;
+    throw error;
+  }
+
+  if (res.status === 401 || res.status === 403) {
+    const text = (await res.text()).slice(0, 500);
+    metrics.lastError = `${res.status}: ${text}`;
+    throw new Error(`OpenRouter API key rejected (${res.status})`);
+  }
+
+  if (res.status === 402) {
+    const text = (await res.text()).slice(0, 500);
+    markExhausted(utcDay());
+    metrics.lastError = `402: ${text}`;
+    throw new QuotaError("OpenRouter free allowance unavailable");
+  }
+
+  if (res.status === 429) {
+    metrics.rateLimits++;
+    const text = (await res.text()).slice(0, 700);
+    metrics.lastError = `429: ${text}`;
+    globalCooldownUntil = Date.now() + 20_000;
+    throw new QuotaError("OpenRouter free router is temporarily rate-limited");
+  }
+
+  if (!res.ok) {
+    metrics.providerErrors++;
+    const text = (await res.text()).slice(0, 700);
+    metrics.lastError = `${res.status}: ${text}`;
+    throw new Error(`OpenRouter ${res.status}`);
+  }
+
+  const data = await res.json();
+  if (data?.error) {
+    metrics.providerErrors++;
+    metrics.lastError = JSON.stringify(data.error).slice(0, 500);
+    throw new Error("OpenRouter returned an error payload");
+  }
+
+  const text = stripThinking(extractContent(data));
+  if (!text) {
+    metrics.providerErrors++;
+    metrics.lastError = "empty response";
+    throw new Error("OpenRouter returned an empty response");
+  }
+  if (jsonMode && !isJsonObject(text)) {
+    metrics.providerErrors++;
+    metrics.lastError = "non-JSON response";
+    throw new Error("OpenRouter returned invalid structured output");
+  }
+
+  metrics.successes++;
+  metrics.lastModel = String(data.model || ROUTER_MODEL);
+  metrics.lastError = null;
+
+  return {
+    text,
+    model: metrics.lastModel,
+    routeModel: ROUTER_MODEL,
+    usedPaid: false,
+    usedWeb: false,
+  };
 }
