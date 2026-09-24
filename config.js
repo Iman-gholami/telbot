@@ -33,8 +33,13 @@ export const AI_MODELS = list(env.AI_MODELS).filter(
   (id) => id === "openrouter/free" || id.endsWith(":free")
 );
 export const AI_TIMEOUT_SECONDS = clampNumber(env.AI_TIMEOUT_SECONDS, 45, 10, 120);
-export const DAILY_AI_LIMIT = clampNumber(env.DAILY_AI_LIMIT, 120, 1, 100000);
-export const DIRECT_RESERVE = clampNumber(env.DIRECT_RESERVE, 20, 0, 100000);
+
+// OpenRouter's free account allowance is limited, so keep a small safety margin
+// and reserve most of it for direct messages. Old .env values cannot raise this.
+const configuredDailyLimit = clampNumber(env.DAILY_AI_LIMIT, 45, 1, 45);
+export const DAILY_AI_LIMIT = Math.min(configuredDailyLimit, 45);
+const configuredReserve = clampNumber(env.DIRECT_RESERVE, 30, 0, 45);
+export const DIRECT_RESERVE = Math.min(DAILY_AI_LIMIT, Math.max(Math.min(30, DAILY_AI_LIMIT), configuredReserve));
 
 // Hard-disabled paid features. These constants remain exported for backwards
 // compatibility with the runtime, but environment variables cannot enable them.
@@ -54,7 +59,7 @@ export const AUTO_COOLDOWN_SECONDS = clampNumber(env.AUTO_COOLDOWN_SECONDS, 110,
 export const AUTO_MAX_PROB = clampNumber(env.AUTO_MAX_PROB, 0.38, 0.02, 1);
 // Keep the bot feeling live even if an older .env still contains 8/7-second delays.
 export const AUTO_DEBOUNCE_SECONDS = Math.min(clampNumber(env.AUTO_DEBOUNCE_SECONDS, 3, 0, 120), 3);
-export const DIRECT_FOLLOWUP_SECONDS = Math.min(clampNumber(env.DIRECT_FOLLOWUP_SECONDS, 2, 0, 60), 2);
+export const DIRECT_FOLLOWUP_SECONDS = Math.min(clampNumber(env.DIRECT_FOLLOWUP_SECONDS, 1, 0, 60), 1);
 
 export const HISTORY_SIZE = Math.round(clampNumber(env.HISTORY_SIZE, 32, 10, 80));
 export const DB_HISTORY_LIMIT = Math.round(clampNumber(env.DB_HISTORY_LIMIT, 350, 100, 3000));
