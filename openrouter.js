@@ -67,7 +67,7 @@ function utcDay() {
 }
 
 async function discoverFreeModels() {
-  const res = await fetch(`${API}/models`, { signal: AbortSignal.timeout(12_000) });
+  const res = await fetch(`${API}/models`, { signal: AbortSignal.timeout(10_000) });
   if (!res.ok) throw new Error(`OpenRouter models list returned ${res.status}`);
   const data = await res.json();
 
@@ -85,7 +85,7 @@ async function discoverFreeModels() {
         (m.context_length || 0) >= 16000 && id !== "openrouter/free";
     })
     .sort((a, b) => speedScore(a.id) - speedScore(b.id) || (b.context_length || 0) - (a.context_length || 0))
-    .slice(0, 7)
+    .slice(0, 6)
     .map((m) => m.id);
 }
 
@@ -208,6 +208,12 @@ function orderedCandidates(excludeModels = []) {
   return list;
 }
 
+function canAttemptRoute(kind) {
+  const b = budget();
+  if (kind === "direct") return b.remaining > 0;
+  return b.remaining > DIRECT_RESERVE;
+}
+
 async function requestOpenRouter({
   messages,
   temperature,
@@ -217,21 +223,17 @@ async function requestOpenRouter({
   excludeModels = [],
   maxRouteAttempts,
   attemptTimeoutMs,
+  kind = "direct",
 }) {
   if (!freeModels.length) throw new Error("No free OpenRouter models are available");
 
-  if (countUsage) {
-    incrementUsage(utcDay());
-    metrics.requests++;
-  }
-
   const social = maxTokens <= 180;
-  const attempts = Math.max(1, Number(maxRouteAttempts) || (social ? 3 : 4));
+  const attempts = Math.max(1, Number(maxRouteAttempts) || (social ? 2 : 3));
   const timeoutMs = Math.max(
-    3000,
+    2500,
     Math.min(
       AI_TIMEOUT_SECONDS * 1000,
-      Number(attemptTimeoutMs) || (social ? 7000 : 14000)
+      Number(attemptTimeoutMs) || (social ? 6000 : 12000)
     )
   );
 
@@ -239,6 +241,14 @@ async function requestOpenRouter({
   let lastRetryable = null;
 
   for (const model of candidates) {
+    if (countUsage) {
+      if (!canAttemptRoute(kind)) {
+        throw new QuotaError(kind === "direct" ? "daily free-request budget reached" : "direct-message reserve reached");
+      }
+      incrementUsage(utcDay());
+      metrics.requests++;
+    }
+
     try {
       const result = await requestModel(model, {
         messages,
@@ -266,26 +276,8 @@ async function requestOpenRouter({
     }
   }
 
-  globalCooldownUntil = Date.now() + 20_000;
+  globalCooldownUntil = Date.now() + 15_000;
   throw new QuotaError(`Free routes failed: ${lastRetryable?.message || "no compatible route"}`);
-}
-
-async function probeFreeConnection() {
-  const result = await requestOpenRouter({
-    messages: [
-      { role: "system", content: 'Return only JSON: {"reply":"OK"}' },
-      { role: "user", content: "Return OK." },
-    ],
-    temperature: 0,
-    maxTokens: 24,
-    countUsage: false,
-    jsonMode: true,
-    maxRouteAttempts: 4,
-    attemptTimeoutMs: 7000,
-  });
-  metrics.startupProbe = true;
-  console.log(`✅ OpenRouter free AI connected: ${result.model}`);
-  return result.model;
 }
 
 export function initModels() {
@@ -306,8 +298,7 @@ export function initModels() {
     if (!freeModels.length) throw new Error("No free OpenRouter model found");
 
     console.log(`🤖 Fast free routes: ${freeModels.join(" → ")}`);
-    console.log("⚡ Low-latency provider routing + sticky successful model enabled.");
-    await probeFreeConnection();
+    console.log("⚡ No startup AI probe; first real message picks a sticky low-latency route.");
     return currentModels();
   })();
   return initPromise;
@@ -374,5 +365,6 @@ export async function chatCompletion(
     excludeModels,
     maxRouteAttempts,
     attemptTimeoutMs,
+    kind,
   });
 }
