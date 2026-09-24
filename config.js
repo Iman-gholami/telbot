@@ -52,8 +52,9 @@ export const DOCTOR_BIAS = clampNumber(env.DOCTOR_BIAS, 0.65, 0, 1);
 export const ROAST_LEVEL = Math.round(clampNumber(env.ROAST_LEVEL, 2, 1, 3));
 export const AUTO_COOLDOWN_SECONDS = clampNumber(env.AUTO_COOLDOWN_SECONDS, 110, 15, 3600);
 export const AUTO_MAX_PROB = clampNumber(env.AUTO_MAX_PROB, 0.38, 0.02, 1);
-export const AUTO_DEBOUNCE_SECONDS = clampNumber(env.AUTO_DEBOUNCE_SECONDS, 8, 0, 120);
-export const DIRECT_FOLLOWUP_SECONDS = clampNumber(env.DIRECT_FOLLOWUP_SECONDS, 7, 0, 60);
+// Keep the bot feeling live even if an older .env still contains 8/7-second delays.
+export const AUTO_DEBOUNCE_SECONDS = Math.min(clampNumber(env.AUTO_DEBOUNCE_SECONDS, 3, 0, 120), 3);
+export const DIRECT_FOLLOWUP_SECONDS = Math.min(clampNumber(env.DIRECT_FOLLOWUP_SECONDS, 2, 0, 60), 2);
 
 export const HISTORY_SIZE = Math.round(clampNumber(env.HISTORY_SIZE, 32, 10, 80));
 export const DB_HISTORY_LIMIT = Math.round(clampNumber(env.DB_HISTORY_LIMIT, 350, 100, 3000));
