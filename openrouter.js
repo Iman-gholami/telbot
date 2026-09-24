@@ -10,15 +10,24 @@ import { getUsage, incrementUsage, markExhausted } from "./db.js";
 const API = "https://openrouter.ai/api/v1";
 const PREFERRED = ["mistral", "gemma", "llama", "qwen", "deepseek", "minimax", "glm", "nvidia", "kimi"];
 const EXCLUDED = /(vision|-vl|image|embed|guard|safety|moderation|audio|tts|ocr|coder|math|reasoning|thinking|reasoner|r1)/i;
+const DEFAULT_COOLDOWN_MS = 90_000;
+const BAD_OUTPUT_COOLDOWN_MS = 10 * 60_000;
 
 export class QuotaError extends Error {}
-class RetryableRouteError extends Error {}
+class RetryableRouteError extends Error {
+  constructor(message, cooldownMs = DEFAULT_COOLDOWN_MS) {
+    super(message);
+    this.cooldownMs = cooldownMs;
+  }
+}
 
 let freeModels = [...new Set(
   AI_MODELS.filter((id) => (id === "openrouter/free" || id.endsWith(":free")) && !EXCLUDED.test(id))
 )];
 let initPromise = null;
 let globalCooldownUntil = 0;
+let preferredModel = null;
+const modelCooldownUntil = new Map();
 
 const metrics = {
   requests: 0,
@@ -33,9 +42,24 @@ const metrics = {
   routeAttempts: 0,
 };
 
-function score(id) {
+function familyScore(id) {
   const i = PREFERRED.findIndex((p) => id.toLowerCase().includes(p));
   return i === -1 ? PREFERRED.length : i;
+}
+
+function speedScore(id) {
+  const name = String(id).toLowerCase();
+  let score = familyScore(name) * 10;
+  if (/(flash|nano|mini|small|light|lightning|turbo|fast)/i.test(name)) score -= 45;
+  const match = name.match(/(?:^|[-_/])(\d+(?:\.\d+)?)b(?:[-_/]|$)/i);
+  if (match) {
+    const b = Number(match[1]);
+    if (b <= 12) score -= 30;
+    else if (b <= 32) score -= 15;
+    else if (b >= 100) score += 35;
+    else if (b >= 70) score += 20;
+  }
+  return score;
 }
 
 function utcDay() {
@@ -43,7 +67,7 @@ function utcDay() {
 }
 
 async function discoverFreeModels() {
-  const res = await fetch(`${API}/models`, { signal: AbortSignal.timeout(15000) });
+  const res = await fetch(`${API}/models`, { signal: AbortSignal.timeout(12_000) });
   if (!res.ok) throw new Error(`OpenRouter models list returned ${res.status}`);
   const data = await res.json();
 
@@ -60,8 +84,8 @@ async function discoverFreeModels() {
       return free && textOut && structured && !EXCLUDED.test(id) &&
         (m.context_length || 0) >= 16000 && id !== "openrouter/free";
     })
-    .sort((a, b) => score(a.id) - score(b.id) || (b.context_length || 0) - (a.context_length || 0))
-    .slice(0, 8)
+    .sort((a, b) => speedScore(a.id) - speedScore(b.id) || (b.context_length || 0) - (a.context_length || 0))
+    .slice(0, 7)
     .map((m) => m.id);
 }
 
@@ -92,7 +116,7 @@ function parseJsonObject(text) {
   }
 }
 
-async function requestModel(model, { messages, temperature, maxTokens, jsonMode }) {
+async function requestModel(model, { messages, temperature, maxTokens, jsonMode, attemptTimeoutMs }) {
   metrics.routeAttempts++;
 
   const body = {
@@ -105,6 +129,7 @@ async function requestModel(model, { messages, temperature, maxTokens, jsonMode 
     provider: {
       allow_fallbacks: true,
       require_parameters: Boolean(jsonMode),
+      sort: "latency",
     },
   };
   if (jsonMode) body.response_format = { type: "json_object" };
@@ -119,7 +144,7 @@ async function requestModel(model, { messages, temperature, maxTokens, jsonMode 
         "X-Title": "Narges Koochooloo Telegram Bot",
       },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(AI_TIMEOUT_SECONDS * 1000),
+      signal: AbortSignal.timeout(attemptTimeoutMs),
     });
   } catch (error) {
     throw new RetryableRouteError(`${model}: ${error.message}`);
@@ -139,13 +164,12 @@ async function requestModel(model, { messages, temperature, maxTokens, jsonMode 
   if (res.status === 429) {
     metrics.rateLimits++;
     const text = (await res.text()).slice(0, 500);
-    throw new RetryableRouteError(`${model} -> 429: ${text}`);
+    throw new RetryableRouteError(`${model} -> 429: ${text}`, 3 * 60_000);
   }
 
   if (!res.ok) {
     metrics.providerErrors++;
     const text = (await res.text()).slice(0, 500);
-    // 400 is retryable here: some free providers advertise a parameter but reject it at runtime.
     if ([400, 404, 408, 422, 500, 502, 503, 504].includes(res.status)) {
       throw new RetryableRouteError(`${model} -> ${res.status}: ${text}`);
     }
@@ -159,15 +183,29 @@ async function requestModel(model, { messages, temperature, maxTokens, jsonMode 
   if (!text) throw new RetryableRouteError(`${model}: empty response`);
 
   if (jsonMode && !parseJsonObject(text)) {
-    throw new RetryableRouteError(`${model}: non-JSON output rejected`);
+    throw new RetryableRouteError(`${model}: non-JSON output rejected`, BAD_OUTPUT_COOLDOWN_MS);
   }
 
   return {
     text,
     model: String(data.model || model),
+    routeModel: model,
     usedPaid: false,
     usedWeb: false,
   };
+}
+
+function orderedCandidates(excludeModels = []) {
+  const excluded = new Set(excludeModels.map(String));
+  const now = Date.now();
+  const available = freeModels.filter((m) => !excluded.has(m) && (modelCooldownUntil.get(m) || 0) <= now);
+  const cooled = freeModels.filter((m) => !excluded.has(m) && (modelCooldownUntil.get(m) || 0) > now);
+  const list = available.length ? available : cooled;
+
+  if (preferredModel && list.includes(preferredModel)) {
+    return [preferredModel, ...list.filter((m) => m !== preferredModel)];
+  }
+  return list;
 }
 
 async function requestOpenRouter({
@@ -177,6 +215,8 @@ async function requestOpenRouter({
   countUsage = true,
   jsonMode = true,
   excludeModels = [],
+  maxRouteAttempts,
+  attemptTimeoutMs,
 }) {
   if (!freeModels.length) throw new Error("No free OpenRouter models are available");
 
@@ -185,14 +225,31 @@ async function requestOpenRouter({
     metrics.requests++;
   }
 
-  const excluded = new Set(excludeModels.map(String));
-  const candidates = freeModels.filter((m) => !excluded.has(m));
+  const social = maxTokens <= 180;
+  const attempts = Math.max(1, Number(maxRouteAttempts) || (social ? 3 : 4));
+  const timeoutMs = Math.max(
+    3000,
+    Math.min(
+      AI_TIMEOUT_SECONDS * 1000,
+      Number(attemptTimeoutMs) || (social ? 7000 : 14000)
+    )
+  );
+
+  const candidates = orderedCandidates(excludeModels).slice(0, attempts);
   let lastRetryable = null;
 
   for (const model of candidates) {
     try {
-      const result = await requestModel(model, { messages, temperature, maxTokens, jsonMode });
+      const result = await requestModel(model, {
+        messages,
+        temperature,
+        maxTokens,
+        jsonMode,
+        attemptTimeoutMs: timeoutMs,
+      });
       if (countUsage) metrics.successes++;
+      preferredModel = result.routeModel;
+      modelCooldownUntil.delete(result.routeModel);
       metrics.lastModel = result.model;
       metrics.lastError = null;
       return result;
@@ -200,6 +257,7 @@ async function requestOpenRouter({
       if (error instanceof RetryableRouteError) {
         lastRetryable = error;
         metrics.lastError = error.message;
+        modelCooldownUntil.set(model, Date.now() + (error.cooldownMs || DEFAULT_COOLDOWN_MS));
         console.warn(`↪️ Free route skipped: ${error.message}`);
         continue;
       }
@@ -208,8 +266,8 @@ async function requestOpenRouter({
     }
   }
 
-  globalCooldownUntil = Date.now() + 30_000;
-  throw new QuotaError(`All free OpenRouter routes failed: ${lastRetryable?.message || "no compatible route"}`);
+  globalCooldownUntil = Date.now() + 20_000;
+  throw new QuotaError(`Free routes failed: ${lastRetryable?.message || "no compatible route"}`);
 }
 
 async function probeFreeConnection() {
@@ -219,9 +277,11 @@ async function probeFreeConnection() {
       { role: "user", content: "Return OK." },
     ],
     temperature: 0,
-    maxTokens: 30,
+    maxTokens: 24,
     countUsage: false,
     jsonMode: true,
+    maxRouteAttempts: 4,
+    attemptTimeoutMs: 7000,
   });
   metrics.startupProbe = true;
   console.log(`✅ OpenRouter free AI connected: ${result.model}`);
@@ -242,12 +302,11 @@ export function initModels() {
       }
     }
 
-    // Final free router fallback. require_parameters=true still prevents incompatible providers.
     if (!freeModels.includes("openrouter/free")) freeModels.push("openrouter/free");
     if (!freeModels.length) throw new Error("No free OpenRouter model found");
 
-    console.log(`🤖 Structured free routes: ${freeModels.join(" → ")}`);
-    console.log("🧩 Routing model-by-model; invalid/meta-shaped output can be rejected and retried.");
+    console.log(`🤖 Fast free routes: ${freeModels.join(" → ")}`);
+    console.log("⚡ Low-latency provider routing + sticky successful model enabled.");
     await probeFreeConnection();
     return currentModels();
   })();
@@ -283,6 +342,7 @@ export function canSpend(kind = "direct") {
 export function aiMetrics() {
   return {
     ...metrics,
+    preferredModel,
     cooldownSeconds: Math.max(0, Math.ceil((globalCooldownUntil - Date.now()) / 1000)),
   };
 }
@@ -295,6 +355,8 @@ export async function chatCompletion(
     kind = "direct",
     jsonMode = true,
     excludeModels = [],
+    maxRouteAttempts,
+    attemptTimeoutMs,
   } = {}
 ) {
   await initModels();
@@ -310,5 +372,7 @@ export async function chatCompletion(
     countUsage: true,
     jsonMode,
     excludeModels,
+    maxRouteAttempts,
+    attemptTimeoutMs,
   });
 }
