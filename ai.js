@@ -4,6 +4,7 @@ import { displayName, normalizePersian } from "./memory.js";
 import { chooseSide, detectConversationMode } from "./behavior.js";
 import { chatCompletion, canSpend, QuotaError } from "./openrouter.js";
 import { localReply, localFallback } from "./local.js";
+import { customLocalReply } from "./local_rules.js";
 
 const PERSONA = `تو «نرگس کوچولو» هستی؛ یک عضو واقعی و بامزه در یک گروه تلگرامی فارسی.
 دو آدم اصلی گروه «مهندس» و «خانوم دکتر» هستند. می‌دانی مهندس خانوم دکتر را دوست دارد. در کل‌کل‌های دوستانه کمی بیشتر سمت خانوم دکتر هستی، اما مصنوعی و افراطی نه.
@@ -104,6 +105,9 @@ export async function generateReply(ctx, { direct, text, replyToSpeaker = null, 
   const side = chooseSide();
   const localText = normalizeLocalText(text);
 
+  const custom = customLocalReply({ text, userId: ctx.from?.id });
+  if (custom) return { reply: custom, source: "custom-local" };
+
   const local = localReply({
     chatId,
     text: localText,
@@ -128,11 +132,7 @@ export async function generateReply(ctx, { direct, text, replyToSpeaker = null, 
       }
     : { reply: null, source: "silent" };
 
-  // پیام‌های کوتاه اجتماعی ارزش سوزاندن سهمیه و منتظر ماندن برای API را ندارند.
   if (direct && isShortSocial(text, factual)) return fallback();
-
-  // برای ورود خودکار، فقط پیام‌های نسبتاً پرمحتوا را به AI بده؛ localAutoReply بالا
-  // کل‌کل‌های پرتکرار مهندس/خانوم دکتر را بدون API پوشش می‌دهد.
   if (!direct && String(text || "").trim().length < 55) return { reply: null, source: "silent" };
 
   if (!OPENROUTER_API_KEY) return fallback();
