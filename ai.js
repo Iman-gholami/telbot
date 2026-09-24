@@ -87,9 +87,10 @@ function localFastReply(text, speakerName, direct) {
   if (/^(نرگس|نرگس کوچولو|خانوم نرگس|خانم نرگس|نرگسی|narges)$/.test(n)) return "جانم؟ 😌";
   if (/^(هیچی|ولش|ولش کن|بیخیال|بیخیالش)$/.test(n)) return "باشه بابا 😌";
   if (/^(احمق|اسکل|خل|دیوونه)$/.test(n)) return speakerName === "مهندس" ? "خودتی مهندس 😂" : "خودتی 😂";
+  if (/عقل\s+نداری|مغز\s+نداری|بی.?عقلی/.test(n)) return speakerName === "مهندس" ? "باشه پروفسور، تو خیلی عاقلی 😂" : "باشه پروفسور 😂";
   if (/^(سلام|سلام نرگس|سلام نرگس کوچولو)$/.test(n)) return "سلاممم 😌";
   if (/^(خوبی|چطوری|حالت خوبه)$/.test(n)) return "خوبم، تو چطوری؟ 😌";
-  if (/به\s+(?:خانوم|خانم)\s+دکتر\s+بگو.*دوست(?:ش|ت)?\s+دارم/.test(n)) {
+  if (/(?:به\s+(?:خانوم|خانم)\s+دکتر).*(?:بگو|بگی).*(?:دوستش\s+دارم|دوستش دارم)/.test(n)) {
     return speakerName === "مهندس"
       ? "خانوم دکتر، مهندس میگه دوستت داره 😌"
       : "خب خودت بهش بگو دیگه 😄";
@@ -97,37 +98,11 @@ function localFastReply(text, speakerName, direct) {
   return null;
 }
 
-function emergencyReply({ text, speakerName, factual, quotaExhausted }) {
+function emergencyReply({ text, speakerName, factual }) {
   const local = localFastReply(text, speakerName, true);
   if (local) return local;
-  if (factual) {
-    return quotaExhausted
-      ? "الان سهمیه مدل رایگان در دسترس نیست؛ یه کم بعد دوباره بپرس."
-      : "الان مدل رایگان جواب درست نداد؛ یه بار دیگه بپرس.";
-  }
-  return fixedFallback({ quotaExhausted });
-}
-
-async function secondModelRetry({ targetText, direct, factual, excludeModel }) {
-  const result = await chatCompletion(
-    [
-      {
-        role: "system",
-        content: `تو نرگس کوچولو هستی. ${factual ? "دقیق و بدون شوخی جواب بده." : "فارسی محاوره‌ای، طبیعی و کوتاه جواب بده."} فقط JSON بده: {"reply":"..."}.`,
-      },
-      { role: "user", content: `پیام: «${String(targetText || "").slice(0, 400)}»` },
-    ],
-    {
-      temperature: factual ? 0.2 : 0.5,
-      maxTokens: factual ? 280 : 70,
-      kind: direct ? "direct" : "auto",
-      jsonMode: true,
-      excludeModels: excludeModel ? [excludeModel] : [],
-      maxRouteAttempts: 1,
-      attemptTimeoutMs: factual ? 9000 : 5000,
-    }
-  );
-  return { ...result, reply: parseStrictReply(result.text) };
+  if (factual) return "این یکی رو الان نتونستم دقیق جمع کنم؛ یه کم بعد دوباره بپرس.";
+  return fixedFallback();
 }
 
 export async function generateReply(ctx, { direct, text, replyToSpeaker = null, replyToText = null }) {
@@ -139,13 +114,13 @@ export async function generateReply(ctx, { direct, text, replyToSpeaker = null, 
   const fast = localFastReply(text, speakerName, direct);
   if (fast) return { reply: fast, source: "local" };
 
-  const fallback = (quotaExhausted = false) =>
+  const fallback = () =>
     direct
-      ? { reply: emergencyReply({ text, speakerName, factual, quotaExhausted }), source: "fallback" }
+      ? { reply: emergencyReply({ text, speakerName, factual }), source: "fallback" }
       : { reply: null, source: "silent" };
 
   if (!OPENROUTER_API_KEY) return fallback();
-  if (!canSpend(direct ? "direct" : "auto")) return fallback(budget().exhausted);
+  if (!canSpend(direct ? "direct" : "auto")) return fallback();
 
   const summary = String(getChatState(chatId).summary || "").slice(0, factual ? 800 : 520);
   const replyNote = replyToText
@@ -157,7 +132,7 @@ export async function generateReply(ctx, { direct, text, replyToSpeaker = null, 
   const userPrompt = `<memory>\n${memoriesAsText({ limit: memoryLimit })}\n</memory>\n<summary>\n${summary || "ندارد"}\n</summary>\n<recent_chat>\n${historyAsText(chatId, historyLimit) || "ندارد"}\n</recent_chat>\n<target>\n${speakerName}${replyNote}: ${String(text).slice(0, 700)}\n</target>\n${turnRules({ direct, mood, roastLevel, side, banter, factual, speakerName })}\nفقط JSON.`;
 
   try {
-    const first = await chatCompletion(
+    const result = await chatCompletion(
       [
         { role: "system", content: PERSONA },
         { role: "user", content: userPrompt },
@@ -167,40 +142,28 @@ export async function generateReply(ctx, { direct, text, replyToSpeaker = null, 
         maxTokens: factual ? 360 : 80,
         kind: direct ? "direct" : "auto",
         jsonMode: true,
-        maxRouteAttempts: 2,
-        attemptTimeoutMs: factual ? 11000 : 6000,
+        attemptTimeoutMs: factual ? 15000 : 9000,
       }
     );
 
-    let reply = parseStrictReply(first.text);
-    let chosen = first;
-
+    const reply = parseStrictReply(result.text);
     if (!reply) {
-      console.warn(`⚠️ Invalid/meta reply blocked from ${first.model}; trying one compact retry.`);
-      const second = await secondModelRetry({
-        targetText: text,
-        direct,
-        factual,
-        excludeModel: first.routeModel || first.model,
-      });
-      reply = second.reply;
-      chosen = second;
+      console.warn(`⚠️ Invalid/meta reply blocked from ${result.model}; using local fallback.`);
+      return fallback();
     }
-
-    if (!reply) return fallback();
     if (isSilence(reply)) return direct ? fallback() : { reply: null, source: "silent" };
 
     return {
       reply,
       source: "ai",
-      model: chosen.model,
+      model: result.model,
       usedWeb: false,
       usedPaid: false,
     };
   } catch (error) {
     if (error instanceof QuotaError) {
-      console.warn("AI free routes unavailable:", error.message);
-      return fallback(true);
+      console.warn("AI free router unavailable:", error.message);
+      return fallback();
     }
     console.error("AI reply failed:", error.message);
     return fallback();
