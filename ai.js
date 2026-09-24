@@ -1,6 +1,6 @@
 import { OPENROUTER_API_KEY } from "./config.js";
 import { historyAsText, memoriesAsText, getChatState } from "./db.js";
-import { displayName } from "./memory.js";
+import { displayName, normalizePersian } from "./memory.js";
 import { chooseSide, detectConversationMode, fixedFallback } from "./behavior.js";
 import { chatCompletion, canSpend, budget, QuotaError } from "./openrouter.js";
 
@@ -79,10 +79,33 @@ function isSilence(text) {
   return s === SILENCE || (s.includes("سکوت") && s.length < 25);
 }
 
-function tinyAmbiguousReply(text) {
-  const t = String(text || "").trim();
-  if ([...t].length === 1 && /^[\p{L}\p{N}]$/u.test(t)) return `${t} چی؟ 😅`;
+function localFastReply(text, speakerName, direct) {
+  if (!direct) return null;
+  const n = normalizePersian(text).replace(/[.!؟?]+$/g, "").trim();
+
+  if ([...n].length === 1 && /^[\p{L}\p{N}]$/u.test(n)) return `${n} چی؟ 😅`;
+  if (/^(نرگس|نرگس کوچولو|خانوم نرگس|خانم نرگس|نرگسی|narges)$/.test(n)) return "جانم؟ 😌";
+  if (/^(هیچی|ولش|ولش کن|بیخیال|بیخیالش)$/.test(n)) return "باشه بابا 😌";
+  if (/^(احمق|اسکل|خل|دیوونه)$/.test(n)) return speakerName === "مهندس" ? "خودتی مهندس 😂" : "خودتی 😂";
+  if (/^(سلام|سلام نرگس|سلام نرگس کوچولو)$/.test(n)) return "سلاممم 😌";
+  if (/^(خوبی|چطوری|حالت خوبه)$/.test(n)) return "خوبم، تو چطوری؟ 😌";
+  if (/به\s+(?:خانوم|خانم)\s+دکتر\s+بگو.*دوست(?:ش|ت)?\s+دارم/.test(n)) {
+    return speakerName === "مهندس"
+      ? "خانوم دکتر، مهندس میگه دوستت داره 😌"
+      : "خب خودت بهش بگو دیگه 😄";
+  }
   return null;
+}
+
+function emergencyReply({ text, speakerName, factual, quotaExhausted }) {
+  const local = localFastReply(text, speakerName, true);
+  if (local) return local;
+  if (factual) {
+    return quotaExhausted
+      ? "الان سهمیه مدل رایگان در دسترس نیست؛ یه کم بعد دوباره بپرس."
+      : "الان مدل رایگان جواب درست نداد؛ یه بار دیگه بپرس.";
+  }
+  return fixedFallback({ quotaExhausted });
 }
 
 async function secondModelRetry({ targetText, direct, factual, excludeModel }) {
@@ -96,12 +119,12 @@ async function secondModelRetry({ targetText, direct, factual, excludeModel }) {
     ],
     {
       temperature: factual ? 0.2 : 0.5,
-      maxTokens: factual ? 320 : 80,
+      maxTokens: factual ? 280 : 70,
       kind: direct ? "direct" : "auto",
       jsonMode: true,
       excludeModels: excludeModel ? [excludeModel] : [],
-      maxRouteAttempts: 2,
-      attemptTimeoutMs: factual ? 12_000 : 6_000,
+      maxRouteAttempts: 1,
+      attemptTimeoutMs: factual ? 9000 : 5000,
     }
   );
   return { ...result, reply: parseStrictReply(result.text) };
@@ -113,23 +136,25 @@ export async function generateReply(ctx, { direct, text, replyToSpeaker = null, 
   const { mood, roastLevel, banter, factual } = detectConversationMode(text, chatId);
   const side = chooseSide();
 
-  const fallback = (quotaExhausted = false) =>
-    direct ? { reply: fixedFallback({ quotaExhausted }), source: "fallback" } : { reply: null, source: "silent" };
+  const fast = localFastReply(text, speakerName, direct);
+  if (fast) return { reply: fast, source: "local" };
 
-  const tiny = direct ? tinyAmbiguousReply(text) : null;
-  if (tiny) return { reply: tiny, source: "local" };
+  const fallback = (quotaExhausted = false) =>
+    direct
+      ? { reply: emergencyReply({ text, speakerName, factual, quotaExhausted }), source: "fallback" }
+      : { reply: null, source: "silent" };
 
   if (!OPENROUTER_API_KEY) return fallback();
   if (!canSpend(direct ? "direct" : "auto")) return fallback(budget().exhausted);
 
-  const summary = String(getChatState(chatId).summary || "").slice(0, factual ? 900 : 650);
+  const summary = String(getChatState(chatId).summary || "").slice(0, factual ? 800 : 520);
   const replyNote = replyToText
-    ? ` [در جواب ${replyToSpeaker || "کسی"}: «${replyToText.slice(0, 140)}»]`
+    ? ` [در جواب ${replyToSpeaker || "کسی"}: «${replyToText.slice(0, 120)}»]`
     : "";
-  const historyLimit = factual ? 10 : (direct ? 14 : 10);
-  const memoryLimit = factual ? 8 : 6;
+  const historyLimit = factual ? 8 : (direct ? 10 : 8);
+  const memoryLimit = factual ? 7 : 5;
 
-  const userPrompt = `<memory>\n${memoriesAsText({ limit: memoryLimit })}\n</memory>\n<summary>\n${summary || "ندارد"}\n</summary>\n<recent_chat>\n${historyAsText(chatId, historyLimit) || "ندارد"}\n</recent_chat>\n<target>\n${speakerName}${replyNote}: ${String(text).slice(0, 900)}\n</target>\n${turnRules({ direct, mood, roastLevel, side, banter, factual, speakerName })}\nفقط JSON.`;
+  const userPrompt = `<memory>\n${memoriesAsText({ limit: memoryLimit })}\n</memory>\n<summary>\n${summary || "ندارد"}\n</summary>\n<recent_chat>\n${historyAsText(chatId, historyLimit) || "ندارد"}\n</recent_chat>\n<target>\n${speakerName}${replyNote}: ${String(text).slice(0, 700)}\n</target>\n${turnRules({ direct, mood, roastLevel, side, banter, factual, speakerName })}\nفقط JSON.`;
 
   try {
     const first = await chatCompletion(
@@ -139,11 +164,11 @@ export async function generateReply(ctx, { direct, text, replyToSpeaker = null, 
       ],
       {
         temperature: factual ? 0.22 : 0.62,
-        maxTokens: factual ? 420 : 90,
+        maxTokens: factual ? 360 : 80,
         kind: direct ? "direct" : "auto",
         jsonMode: true,
-        maxRouteAttempts: factual ? 4 : 3,
-        attemptTimeoutMs: factual ? 14_000 : 7_000,
+        maxRouteAttempts: 2,
+        attemptTimeoutMs: factual ? 11000 : 6000,
       }
     );
 
