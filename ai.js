@@ -80,6 +80,15 @@ function isSilence(text) {
   return s === SILENCE || (s.includes("سکوت") && s.length < 25);
 }
 
+function normalizeLocalText(text) {
+  let n = normalizePersian(text)
+    .replace(/([\p{L}])\1{2,}/gu, "$1")
+    .replace(/\s+/g, " ")
+    .trim();
+  n = n.replace(/^(?:نرگس کوچولو|خانوم نرگس|خانم نرگس|نرگسی|نرگس|narges)\s*[،,:؛;.!؟?]*\s+/i, "").trim();
+  return n || String(text || "").trim();
+}
+
 function isShortSocial(text, factual) {
   if (factual) return false;
   const n = normalizePersian(text);
@@ -93,10 +102,11 @@ export async function generateReply(ctx, { direct, text, replyToSpeaker = null, 
   const speakerName = displayName(ctx.from);
   const { mood, roastLevel, banter, factual } = detectConversationMode(text, chatId);
   const side = chooseSide();
+  const localText = normalizeLocalText(text);
 
   const local = localReply({
     chatId,
-    text,
+    text: localText,
     speakerName,
     direct,
     replyToSpeaker,
@@ -108,7 +118,7 @@ export async function generateReply(ctx, { direct, text, replyToSpeaker = null, 
     ? {
         reply: localFallback({
           chatId,
-          text,
+          text: localText,
           speakerName,
           factual,
           replyToSpeaker,
